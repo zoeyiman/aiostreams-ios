@@ -20,6 +20,7 @@ enum RecentChannels {
     static func note(_ id: String, client: JellyfinClient, userId: String, defaults: UserDefaults = .standard) {
         let existing = ids(client: client, userId: userId, defaults: defaults)
         defaults.set(updated(id, existing: existing), forKey: key(client: client, userId: userId))
+        NotificationCenter.default.post(name: .liveHistoryChanged, object: nil)
     }
 
     static func updated(_ id: String, existing: [String]) -> [String] {
@@ -41,79 +42,237 @@ struct LiveTVView: View {
     @State private var total = 0
     @State private var loaded = false
     @State private var loading = false
+    @State private var channelError: String?
+    @State private var pageGeneration = UUID()
     /// Programmes by channel, from the half hour before now to six hours on.
     @State private var schedules: [String: [Item]] = [:]
     @State private var now = Date()
-    @State private var choice: VersionChoice?
+    @State private var selectedChannel: Item?
+    @State private var fullscreen = false
+    @State private var choosingGroup = false
+    @State private var favoriteChannels = Set<String>()
+    @State private var favoriteBusy = false
+    @State private var favoriteError: String?
+    @StateObject private var preview = LivePreview()
 
     private static let page = 100
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: Theme.px(20)) {
-                PageTitle(text: "Live TV")
+        GeometryReader { geometry in
+            VStack(alignment: .leading, spacing: Theme.px(24)) {
                 controls
-                if !recentChannels.isEmpty && group != ChannelGroup.recent {
-                    LiveRow(channels: recentChannels, airing: [:], play: play) { EmptyView() }
-                }
-                if !loaded {
-                    ProgressView().frame(maxWidth: .infinity).padding(.top, Theme.px(40))
-                } else if channels.isEmpty {
-                    Text("No channels in this group.")
-                        .font(Theme.font(Theme.base))
-                        .foregroundStyle(Theme.gray400)
-                        .pagePadding()
-                        .focusable()
-                } else if guide {
-                    GuideView(channels: channels, schedules: schedules, window: window, now: now, play: play)
-                    if channels.count < total {
-                        Button("More channels") { Task { await more() } }
-                            .buttonStyle(SoftPillStyle())
-                            .pagePadding()
+                if guide {
+                    ScrollView {
+                        GuideView(channels: channels, schedules: schedules, window: window, now: now, play: play)
+                        if !loaded { ProgressView() }
+                        if let error = channelError {
+                            ErrorText(text: error)
+                            Button("Retry channels") { Task { await more() } }.buttonStyle(SecondaryPillStyle())
+                        }
+                        if channels.count < total {
+                            Button("More channels") { Task { await more() } }.buttonStyle(SecondaryPillStyle())
+                        }
                     }
+                    .scrollClipDisabled()
                 } else {
-                    ForEach(channels) { channel in
-                        ChannelRow(channel: channel, slots: slots(channel), now: now) { play(channel) }
-                            .pagePadding()
-                            .onAppear { if channel.id == channels.last?.id { Task { await more() } } }
+                    HStack(alignment: .top, spacing: Theme.px(32)) {
+                        ScrollView {
+                            LazyVStack(spacing: Theme.px(8)) {
+                                if !loaded { ProgressView().padding(Theme.px(32)) }
+                                if let error = channelError {
+                                    ErrorText(text: error)
+                                    Button("Retry channels") { Task { await more() } }.buttonStyle(SecondaryPillStyle())
+                                }
+                                if loaded && channels.isEmpty && channelError == nil {
+                                    Text("No channels in this group.").foregroundStyle(Theme.gray400).focusable()
+                                }
+                                ForEach(channels) { channel in
+                                    LiveChannelTile(channel: channel, slots: slots(channel), now: now,
+                                                    selected: selectedChannel?.id == channel.id) { play(channel) }
+                                        .onAppear { if channel.id == channels.last?.id { Task { await more() } } }
+                                }
+                            }
+                            .padding(Theme.px(8))
+                        }
+                        .scrollClipDisabled()
+                        .frame(width: max(Theme.px(260), geometry.size.width * 0.42))
+                        .focusSection()
+                        ScrollView { programmePanel }
+                            .scrollClipDisabled()
+                            .frame(maxWidth: .infinity)
+                            .focusSection()
                     }
                 }
             }
-            .padding(.bottom, Theme.px(64))
+            .padding(.horizontal, Theme.px(24))
+            .padding(.top, Theme.px(28))
+            .padding(.bottom, Theme.px(24))
         }
-        .edgeToEdge()
-        .playFlow($choice) { Task { await loadGroups(); if group == ChannelGroup.recent { await reload() } } }
+        .background(Theme.background)
+        .fullScreenCover(isPresented: $choosingGroup) { groupPicker }
+        .fullScreenCover(isPresented: $fullscreen, onDismiss: {
+            preview.surfaceID = UUID()
+            preview.model?.liftSubtitles(0)
+        }) {
+            if let model = preview.model {
+                PlayerChrome(model: model, close: { fullscreen = false }, playNext: { _ in }, finding: nil,
+                             stopPlayback: { preview.stop(); fullscreen = false })
+                    .environmentObject(session).environmentObject(prefs)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .liveHistoryChanged)) { _ in
+            Task { await loadGroups(); if group == ChannelGroup.recent { await reload() } }
+        }
         .task { await loadGroups() }
-        .task(id: group) { await reload() }
+        .task(id: "\(group)-\(guide)") { await reload() }
+        .task(id: selectedChannel?.id) {
+            if let channel = selectedChannel { await preview.play(channel, session: session, prefs: prefs) }
+        }
+        .onDisappear { if !fullscreen && !choosingGroup { preview.stop() } }
         .task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled else { return }
                 now = Date()
             }
         }
     }
 
+    @ViewBuilder private var programmePanel: some View {
+        VStack(alignment: .leading, spacing: Theme.px(20)) {
+            if let channel = selectedChannel {
+                if let model = preview.model, !fullscreen {
+                    LivePreviewSurface(model: model)
+                        .id(preview.surfaceID)
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: Theme.px(16)).fill(.white.opacity(0.04))
+                        if preview.loading { ProgressView() }
+                        else { Image(systemName: "play.tv").font(.system(size: Theme.px(48))).foregroundStyle(Theme.gray400) }
+                    }
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                }
+                if let error = preview.error {
+                    ErrorText(text: error)
+                    Button("Retry channel") { Task { await preview.play(channel, session: session, prefs: prefs) } }
+                        .buttonStyle(SecondaryPillStyle())
+                }
+                Text([channel.channelNumber, channel.name].compactMap { $0 }.joined(separator: " · "))
+                    .font(Theme.font(Theme.base, .semibold)).foregroundStyle(Theme.gray400)
+                if let current = slots(channel).now {
+                    Text(current.name).font(Theme.font(Theme.xl2, .bold))
+                    if let start = current.start, let end = current.end {
+                        Text("\(prefs.time(start)) – \(prefs.time(end)) · \(max(0, Int(ceil(end.timeIntervalSince(now) / 60))))m left")
+                            .font(Theme.font(Theme.base)).foregroundStyle(Theme.gray300)
+                        ProgressView(value: airedShare(from: start, to: end, now: now)).tint(.white)
+                    }
+                    if let current = (schedules[channel.id] ?? []).first(where: { ($0.starts ?? .distantFuture) <= now && ($0.ends ?? .distantPast) > now }),
+                       let overview = current.overview {
+                        Text(overview).font(Theme.font(Theme.base)).foregroundStyle(Theme.gray300)
+                    } else if let overview = channel.currentProgram?.overview {
+                        Text(overview).font(Theme.font(Theme.base)).foregroundStyle(Theme.gray300)
+                    }
+                }
+                HStack(spacing: Theme.px(16)) {
+                    if let model = preview.model {
+                        LivePreviewActions(model: model, expand: { fullscreen = true }, retry: {
+                            Task { await preview.play(channel, session: session, prefs: prefs, force: true) }
+                        })
+                    }
+                    Button { Task { await toggleFavorite(channel) } } label: {
+                        Image(systemName: favoriteChannels.contains(channel.id) ? "heart.fill" : "heart")
+                    }
+                    .buttonStyle(CircleIconStyle(active: favoriteChannels.contains(channel.id)))
+                    .disabled(favoriteBusy)
+                    .accessibilityLabel(favoriteChannels.contains(channel.id) ? "Remove channel favorite" : "Favorite channel")
+                }
+                if let error = favoriteError { ErrorText(text: error) }
+                let later = (schedules[channel.id] ?? []).filter { ($0.starts ?? .distantPast) > now }
+                if !later.isEmpty {
+                    Text("LATER").font(Theme.font(Theme.sm, .semibold)).foregroundStyle(Theme.gray400)
+                    ForEach(later.prefix(4)) { programme in
+                        HStack(alignment: .top, spacing: Theme.px(16)) {
+                            Text(programme.starts.map(prefs.time) ?? "").foregroundStyle(Theme.gray400)
+                            Text(programme.name ?? "Programme")
+                        }
+                        .font(Theme.font(Theme.base))
+                    }
+                }
+            } else {
+                RoundedRectangle(cornerRadius: Theme.px(16)).fill(.white.opacity(0.04))
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                    .overlay { Label("Select a channel to watch", systemImage: "play.tv").foregroundStyle(Theme.gray400) }
+            }
+        }
+        .padding(Theme.px(8))
+    }
+
+    @MainActor private func toggleFavorite(_ channel: Item) async {
+        guard !favoriteBusy, let client = session.client, let userId = session.userId else { return }
+        favoriteBusy = true
+        favoriteError = nil
+        defer { favoriteBusy = false }
+        let wasFavorite = favoriteChannels.contains(channel.id)
+        do {
+            try await client.call(wasFavorite ? "DELETE" : "POST", "/UserFavoriteItems/\(channel.id)", ["userId": userId])
+            if wasFavorite { favoriteChannels.remove(channel.id) } else { favoriteChannels.insert(channel.id) }
+            await loadGroups()
+            if group == ChannelGroup.favourites { await reload() }
+        } catch { favoriteError = error.localizedDescription }
+    }
+
     // MARK: Groups and view
 
     private var controls: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: Theme.px(8)) {
-                Button { setGuide(false) } label: { Label("List", systemImage: "list.bullet") }
-                    .buttonStyle(SoftPillStyle(selected: !guide))
-                Button { setGuide(true) } label: { Label("Guide", systemImage: "calendar.day.timeline.left") }
-                    .buttonStyle(SoftPillStyle(selected: guide))
-                Rectangle().fill(.white.opacity(0.15)).frame(width: Theme.px(1), height: Theme.px(24))
-                    .padding(.horizontal, Theme.px(8))
-                ForEach(groups) { item in
-                    Button(item.name) { choose(item.id) }
-                        .buttonStyle(SoftPillStyle(selected: item.id == group))
+        HStack(spacing: Theme.px(16)) {
+            Button("All channels") { choose(ChannelGroup.all) }
+                .buttonStyle(SoftPillStyle(selected: group == ChannelGroup.all))
+            Button { choosingGroup = true } label: {
+                Label(groups.first { $0.id == group }?.name ?? "Channel group", systemImage: "chevron.down")
+            }
+            .buttonStyle(SecondaryPillStyle())
+            if !recentChannels.isEmpty {
+                Button("Recently Watched") { choose(ChannelGroup.recent) }
+                    .buttonStyle(SoftPillStyle(selected: group == ChannelGroup.recent))
+            }
+            Spacer()
+            Picker("View", selection: Binding(get: { guide }, set: { setGuide($0) })) {
+                Text("Guide").tag(true)
+                Text("Channels").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: Theme.px(230))
+        }
+        .focusSection()
+    }
+
+    private var groupPicker: some View {
+        VStack(alignment: .leading, spacing: Theme.px(24)) {
+            Text("Channel groups").font(Theme.font(Theme.xl3, .bold))
+            ScrollView {
+                LazyVStack(spacing: Theme.px(12)) {
+                    ForEach(groups) { item in
+                        Button {
+                            choose(item.id)
+                            choosingGroup = false
+                        } label: {
+                            HStack {
+                                Text(item.name)
+                                Spacer()
+                                if item.id == group { Image(systemName: "checkmark") }
+                            }
+                            .padding(Theme.px(20))
+                        }
+                        .buttonStyle(RowStyle())
+                    }
                 }
             }
-            .pagePadding()
-            .padding(.vertical, Theme.px(8))
+            Button("Cancel") { choosingGroup = false }.buttonStyle(SecondaryPillStyle())
         }
-        .edgeToEdge()
-        .focusSection()
+        .padding(Theme.px(56))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.background)
+        .onExitCommand { choosingGroup = false }
     }
 
     private func setGuide(_ on: Bool) {
@@ -156,6 +315,9 @@ struct LiveTVView: View {
     // MARK: Channels
 
     private func reload() async {
+        pageGeneration = UUID()
+        loading = false
+        channelError = nil
         channels = []
         total = 0
         schedules = [:]
@@ -165,35 +327,48 @@ struct LiveTVView: View {
 
     private func more() async {
         guard !loading, let client = session.client, let userId = session.userId else { return }
-        if loaded && channels.count >= total { return }
-        loading = true
-        defer { loading = false }
+        if loaded && channels.count >= total && channelError == nil { return }
+        let generation = pageGeneration
         let asked = group
-        var found: [Item] = []
-        if group == ChannelGroup.recent {
-            let ids = RecentChannels.ids(client: client, userId: userId)
-            let result: ItemsResult? = ids.isEmpty ? nil : try? await client.get("/Items", ["userId": userId, "Ids": ids.joined(separator: ",")])
-            let byId = Dictionary((result?.items ?? []).map { ($0.id, $0) }) { first, _ in first }
-            found = ids.compactMap { byId[$0] }.filter(\.isChannel)
-            total = found.count
-        } else {
-            let result: ItemsResult? = try? await client.get("/LiveTv/Channels", [
-                "userId": userId,
-                "StartIndex": String(channels.count),
-                "Limit": String(Self.page),
-                "IsFavorite": group == ChannelGroup.favourites ? "true" : nil,
-                "GenreIds": [ChannelGroup.favourites, ChannelGroup.all].contains(group) ? nil : group,
-                "AddCurrentProgram": "true",
-                "EnableTotalRecordCount": "true",
-            ])
-            found = result?.items ?? []
-            total = result?.totalRecordCount ?? 0
-            if found.isEmpty { total = channels.count }
+        loading = true
+        channelError = nil
+        defer { if generation == pageGeneration { loading = false } }
+        do {
+            let found: [Item]
+            let count: Int
+            if asked == ChannelGroup.recent {
+                let ids = RecentChannels.ids(client: client, userId: userId)
+                if ids.isEmpty { found = [] }
+                else {
+                    let result: ItemsResult = try await client.get("/Items", ["userId": userId, "Ids": ids.joined(separator: ",")])
+                    let byId = Dictionary((result.items ?? []).map { ($0.id, $0) }) { first, _ in first }
+                    found = ids.compactMap { byId[$0] }.filter(\.isChannel)
+                }
+                count = found.count
+            } else {
+                let result: ItemsResult = try await client.get("/LiveTv/Channels", [
+                    "userId": userId, "StartIndex": String(channels.count), "Limit": String(Self.page),
+                    "IsFavorite": asked == ChannelGroup.favourites ? "true" : nil,
+                    "GenreIds": [ChannelGroup.favourites, ChannelGroup.all].contains(asked) ? nil : asked,
+                    "AddCurrentProgram": "true", "EnableTotalRecordCount": "true",
+                ])
+                found = result.items ?? []
+                count = found.isEmpty ? channels.count : (result.totalRecordCount ?? (found.count < Self.page ? channels.count + found.count : Int.max))
+            }
+            try Task.checkCancellation()
+            guard generation == pageGeneration, asked == group else { return }
+            for channel in found where channel.userData?.isFavorite == true { favoriteChannels.insert(channel.id) }
+            let known = Set(channels.map(\.id))
+            channels += found.filter { !known.contains($0.id) }
+            total = count
+            loaded = true
+            await loadSchedules(for: found.map(\.id), generation: generation)
+        } catch is CancellationError {
+        } catch {
+            guard generation == pageGeneration else { return }
+            channelError = error.localizedDescription
+            loaded = true
         }
-        guard asked == group else { return }
-        channels += found
-        loaded = true
-        await loadSchedules(for: found.map(\.id))
     }
 
     /// The window the guide shows, from the last half hour.
@@ -203,7 +378,7 @@ struct LiveTVView: View {
         return (start, start.addingTimeInterval(6 * 3600))
     }
 
-    private func loadSchedules(for ids: [String]) async {
+    private func loadSchedules(for ids: [String], generation: UUID) async {
         guard !ids.isEmpty, let client = session.client, let userId = session.userId else { return }
         let iso = ISO8601DateFormatter()
         let (start, end) = window
@@ -216,6 +391,7 @@ struct LiveTVView: View {
                 "SortBy": ["StartDate"],
                 "Fields": ["Overview", "Genres"],
             ])
+            guard generation == pageGeneration, !Task.isCancelled else { return }
             for programme in result?.items ?? [] {
                 guard let channel = programme.channelId else { continue }
                 schedules[channel, default: []].append(programme)
@@ -238,7 +414,11 @@ struct LiveTVView: View {
     }
 
     private func play(_ channel: Item) {
-        choice = VersionChoice(item: channel, startMs: nil, mode: .straight)
+        if guide { setGuide(false) }
+        if selectedChannel?.id == channel.id {
+            if let model = preview.model, model.failure == nil && !model.finished { fullscreen = true }
+            else { Task { await preview.play(channel, session: session, prefs: prefs, force: true) } }
+        } else { selectedChannel = channel }
     }
 }
 
@@ -287,63 +467,6 @@ struct ChannelLogo: View {
                     .foregroundStyle(Theme.gray300)
             }
         }
-    }
-}
-
-/// One channel in the list: its logo, number and name, what's on with how far through it is, and what's next.
-private struct ChannelRow: View {
-    @EnvironmentObject private var prefs: Preferences
-    let channel: Item
-    let slots: (now: Slot?, next: Slot?)
-    let now: Date
-    let play: () -> Void
-
-    var body: some View {
-        Button(action: play) {
-            HStack(spacing: Theme.px(16)) {
-                ChannelLogo(channel: channel)
-                    .frame(width: Theme.px(96), height: Theme.px(54))
-                VStack(alignment: .leading, spacing: Theme.px(2)) {
-                    HStack(spacing: Theme.px(8)) {
-                        if let number = channel.channelNumber {
-                            Text(number).foregroundStyle(Theme.gray400).monospacedDigit()
-                        }
-                        Text(channel.name ?? "").lineLimit(1)
-                    }
-                    .font(Theme.font(Theme.base, .semibold))
-                    if let current = slots.now {
-                        Text(current.name).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray200).lineLimit(1)
-                    }
-                    if let next = slots.next {
-                        Text("Next" + (next.start.map { " \(prefs.time($0))" } ?? "") + ": " + next.name)
-                            .font(Theme.font(Theme.xs))
-                            .foregroundStyle(Theme.gray400)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: Theme.px(16))
-                if let current = slots.now {
-                    VStack(alignment: .trailing, spacing: Theme.px(6)) {
-                        if let start = current.start, let end = current.end {
-                            Text("\(prefs.time(start)) – \(prefs.time(end))")
-                                .font(Theme.font(Theme.xs))
-                                .foregroundStyle(Theme.gray400)
-                                .monospacedDigit()
-                        }
-                        Capsule().fill(.white.opacity(0.15))
-                            .frame(width: Theme.px(120), height: Theme.px(4))
-                            .overlay(alignment: .leading) {
-                                Capsule().fill(Theme.brand500)
-                                    .frame(width: Theme.px(120) * airedShare(from: current.start, to: current.end, now: now))
-                            }
-                    }
-                }
-            }
-            .padding(.horizontal, Theme.px(16))
-            .padding(.vertical, Theme.px(10))
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(RowStyle())
     }
 }
 
@@ -533,95 +656,6 @@ private struct GuideView: View {
         .frame(width: width, height: Self.rowHeight, alignment: .topLeading)
     }
 }
-
-/// Channels as wide cards: the logo over a dark tile, the channel's name and what's on, with how far
-/// through it is. Selecting one plays it live.
-struct LiveRow<Action: View>: View {
-    let channels: [Item]
-    let airing: [String: Item]
-    let play: (Item) -> Void
-    @ViewBuilder let action: () -> Action
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.px(12)) {
-            HStack {
-                Text("Recently Watched").font(Theme.font(Theme.xl, .semibold))
-                Spacer()
-                action()
-            }
-            .pagePadding()
-            .focusSection()
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                    ForEach(channels) { channel in
-                        ChannelCard(channel: channel, airing: airing[channel.id]) { play(channel) }
-                    }
-                }
-                .pagePadding()
-                .padding(.vertical, Theme.px(8))
-            }
-            .edgeToEdge()
-        }
-        .focusSection()
-    }
-}
-
-private struct ChannelCard: View {
-    let channel: Item
-    let airing: Item?
-    let action: () -> Void
-
-    /// What's on: from the guide, else what the channel list sent along.
-    private var programme: (name: String, start: Date?, end: Date?)? {
-        if let airing { return (airing.name ?? "", airing.starts, airing.ends) }
-        if let current = channel.currentProgram { return (current.name ?? "", current.starts, current.ends) }
-        return nil
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.px(8)) {
-            Button(action: action) {
-                ZStack(alignment: .bottom) {
-                    ZStack {
-                        Theme.gray900
-                        ChannelLogo(channel: channel)
-                            .frame(width: Theme.px(160), height: Theme.px(90))
-                    }
-                    .frame(width: WideCard.size.width, height: WideCard.size.height)
-                    if let programme {
-                        GeometryReader { geometry in
-                            ZStack(alignment: .leading) {
-                                Rectangle().fill(.white.opacity(0.25))
-                                Rectangle().fill(Theme.brand500)
-                                    .frame(width: geometry.size.width * airedShare(from: programme.start, to: programme.end, now: Date()))
-                            }
-                        }
-                        .frame(height: Theme.px(4))
-                    }
-                }
-                .frame(width: WideCard.size.width, height: WideCard.size.height)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
-            }
-            .buttonStyle(CardStyle())
-            VStack(alignment: .leading, spacing: Theme.px(2)) {
-                HStack(spacing: Theme.px(6)) {
-                    if let number = channel.channelNumber {
-                        Text(number).foregroundStyle(Theme.gray400).monospacedDigit()
-                    }
-                    Text(channel.name ?? "").lineLimit(1)
-                }
-                .font(Theme.font(15, .semibold))
-                Text(programme?.name ?? "Live")
-                    .font(Theme.font(13))
-                    .foregroundStyle(Theme.gray400)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, Theme.px(2))
-            .frame(width: WideCard.size.width, alignment: .leading)
-        }
-    }
-}
-
 
 /// Each player request owns a gate; failed loads and later resumes cannot add extra entries.
 struct ChannelHistoryGate {

@@ -107,4 +107,40 @@ final class CollectionTests: XCTestCase {
         XCTAssertEqual(Set(visible).count, visible.count)
     }
 
+    func testCatalogueRetainsCollectionsButNotLiveChannels() {
+        let items = [Item(id: "set", type: "BoxSet"), Item(id: "library", type: "CollectionFolder"),
+                     Item(id: "folder", type: "Folder"), Item(id: "film", type: "Movie"),
+                     Item(id: "live", type: "TvChannel"), Item(id: "programme", type: "Program")]
+        XCTAssertEqual(items.filter(\.isCatalogueEntry).map(\.id), ["set", "library", "folder", "film"])
+        XCTAssertEqual(items.filter(\.isOnDemand).map(\.id), ["film"])
+    }
+
+    func testAIOStreamsProfileResponseWithPINAndPasswordRequirements() throws {
+        let json = Data(#"[{"user":{"Id":"alex","Name":"Alex"},"avatar":null,"needs":null},{"user":{"Id":"kids","Name":"Kids"},"avatar":"/avatar/kids","needs":"pin"},{"user":{"Id":"sam","Name":"Sam"},"avatar":null,"needs":"password-pin"}]"#.utf8)
+        let profiles = try JellyfinClient.decodeResponse(json, as: [PickableProfile].self)
+        XCTAssertEqual(profiles.map(\.id), ["alex", "kids", "sam"])
+        XCTAssertNil(profiles[0].needs)
+        XCTAssertEqual(profiles[1].needs, "pin")
+        XCTAssertEqual(profiles[2].needs, "password-pin")
+    }
+
+    func testProgrammeDescriptionSurvivesLiveChannelDecoding() throws {
+        let json = Data(#"{"Id":"channel","Type":"TvChannel","CurrentProgram":{"Id":"programme","Name":"Live match","Overview":"Match coverage","StartDate":"2026-11-14T12:00:00Z","EndDate":"2026-11-14T13:00:00Z"}}"#.utf8)
+        let channel = try JellyfinClient.decodeResponse(json, as: Item.self)
+        XCTAssertTrue(channel.isChannel)
+        XCTAssertEqual(channel.currentProgram?.overview, "Match coverage")
+    }
+
+    @MainActor func testTVSubtitleScaleDoesNotChangeSyncedSubtitleSize() {
+        let prefs = Preferences()
+        let previous = prefs.tvSubtitleScale
+        defer { prefs.tvSubtitleScale = previous }
+        let synced = prefs.text("subtitleSize", "normal")
+        prefs.tvSubtitleScale = 1
+        let webSize = prefs.subtitleLook.scale
+        prefs.tvSubtitleScale = 0.6
+        XCTAssertEqual(prefs.subtitleLook.scale, webSize * 0.6, accuracy: 0.001)
+        XCTAssertEqual(prefs.text("subtitleSize", "normal"), synced)
+    }
+
 }

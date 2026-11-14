@@ -1,0 +1,79 @@
+name: tvOS tests
+
+on:
+  push:
+    branches: [codex/tvos-customizable-sidebar]
+  pull_request:
+    paths:
+      - 'TV/**'
+      - 'AIOStreams/Sources/**'
+      - 'Packages/**'
+      - 'project.yml'
+      - 'web/**'
+      - 'scripts/build-web.sh'
+      - '.github/workflows/tvos-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tvos-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_2[6-9]*.app | grep -vi beta | sort -V | tail -n 1)
+          [ -n "$xcode" ] || xcode=$(ls -d /Applications/Xcode_2[6-9]*.app | sort -V | tail -n 1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Build bundled web app
+        run: scripts/build-web.sh
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Run native tvOS tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          TV_SIMULATOR_ID=$(python3 - <<'PY'
+          import json, subprocess
+          runtimes = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'runtimes', '-j']))['runtimes']
+          devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '-j']))['devices']
+          runtimes = sorted((r for r in runtimes if r['isAvailable'] and r.get('platform') == 'tvOS'),
+                            key=lambda r: [int(p) for p in r['version'].split('.')], reverse=True)
+          for runtime in runtimes:
+              candidates = [d for d in devices.get(runtime['identifier'], []) if d.get('isAvailable')]
+              if candidates:
+                  print(candidates[0]['udid'])
+                  break
+          else:
+              raise SystemExit('No available tvOS simulator; install a tvOS runtime on this runner.')
+          PY
+          )
+          xcodebuild test -project AIOStreams.xcodeproj -scheme AIOStreamsTV \
+            -destination "platform=tvOS Simulator,id=$TV_SIMULATOR_ID" \
+            -jobs 2 -parallel-testing-enabled NO \
+            -resultBundlePath build/tvos-tests.xcresult \
+            CODE_SIGNING_ALLOWED=NO | tee build/tvos-tests.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tvos-test-results
+          path: |
+            build/tvos-tests.xcresult
+            build/tvos-tests.log
+          if-no-files-found: warn

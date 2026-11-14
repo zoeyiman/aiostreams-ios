@@ -90,6 +90,11 @@ final class Session: ObservableObject {
     }
 
     func signIn(_ result: AuthResult) {
+        profileGeneration = UUID()
+        saving = []
+        savedOverrides = [:]
+        savedIDs = nil
+        saveError = nil
         guard var client else { return }
         client.token = result.accessToken
         self.client = client

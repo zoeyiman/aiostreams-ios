@@ -110,11 +110,12 @@ private enum PlayerPanel: Hashable {
     case tracks, audio, chapters, speed, sync, episodes
 }
 
-private struct PlayerChrome: View {
+struct PlayerChrome: View {
     @ObservedObject var model: PlayerModel
     let close: () -> Void
     let playNext: (Item) -> Void
     let finding: Item?
+    var stopPlayback: (() -> Void)? = nil
 
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
@@ -720,7 +721,7 @@ private struct PlayerChrome: View {
                 }
                 .buttonStyle(SoftPillStyle(selected: true))
                 .focused($focus, equals: .keepWatching)
-                Button("Stop") { close() }
+                Button("Stop") { if let stopPlayback { stopPlayback() } else { close() } }
                     .buttonStyle(SoftPillStyle())
                     .focused($focus, equals: .stop)
             }

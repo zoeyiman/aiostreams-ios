@@ -6,6 +6,7 @@ import SwiftUI
 
 extension Notification.Name {
     /// Watched or favourite state changed, so pages showing it load again.
+    static let liveHistoryChanged = Notification.Name("aiostreams.liveHistoryChanged")
     static let watchStateChanged = Notification.Name("aiostreams.watchStateChanged")
 }
 

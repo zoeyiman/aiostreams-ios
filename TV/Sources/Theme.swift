@@ -6,6 +6,7 @@ import UIKit
 /// so every size here is the web app's CSS pixels × 1.5.
 enum Theme {
     static let scale: CGFloat = 1.5
+    static let controlRadius = px(12)
     static let cardRadius = px(12)
     static let carouselGap = px(20)
     static let sectionGap = px(40)
@@ -16,8 +17,8 @@ enum Theme {
     /// The page's colour; the theme's background where the web app's theme set one.
     static var background: Color { custom.background ?? Color(red: 7 / 255, green: 7 / 255, blue: 7 / 255) }
     /// `--ring`, brand-400: the one focus mark everywhere, a step lighter than the accent.
-    static var ring: Color { custom.ring ?? Color(red: 159 / 255, green: 146 / 255, blue: 255 / 255) }
-    static var brand500: Color { custom.accent ?? Color(red: 97 / 255, green: 82 / 255, blue: 223 / 255) }
+    static var ring: Color { custom.ring ?? Color.white }
+    static var brand500: Color { custom.accent ?? Color(red: 0.2, green: 0.55, blue: 1) }
 
     /// The web app's theme colours (Settings > Theme), applied as the app starts and when they change.
     struct Custom: Equatable {
@@ -55,27 +56,27 @@ enum Theme {
 
     enum Weight { case regular, medium, semibold, bold, extrabold }
 
-    /// Inter, bundled, by PostScript name so each weight resolves exactly; sizes in CSS pixels.
+    /// SF system typography with explicit tvOS-sized hierarchy.
     static func font(_ size: CGFloat, _ weight: Weight = .regular) -> Font {
-        let name: String
+        let systemWeight: Font.Weight
         switch weight {
-        case .regular: name = "Inter-Regular"
-        case .medium: name = "Inter-Medium"
-        case .semibold: name = "Inter-SemiBold"
-        case .bold: name = "Inter-Bold"
-        case .extrabold: name = "Inter-ExtraBold"
+        case .regular: systemWeight = .regular
+        case .medium: systemWeight = .medium
+        case .semibold: systemWeight = .semibold
+        case .bold: systemWeight = .bold
+        case .extrabold: systemWeight = .heavy
         }
-        return .custom(name, fixedSize: px(size))
+        return .system(size: px(size), weight: systemWeight)
     }
 
     // Tailwind's text sizes, which the web app's components use.
     static let xs: CGFloat = 12
     static let sm: CGFloat = 14
-    static let base: CGFloat = 16
+    static let base: CGFloat = 18
     static let lg: CGFloat = 18
     static let xl: CGFloat = 20
     static let xl2: CGFloat = 24
-    static let xl3: CGFloat = 30
+    static let xl3: CGFloat = 34
 }
 
 /// Reads focus inside a button style, where only a view can.
@@ -98,7 +99,7 @@ struct FocusRing: ViewModifier {
                         RoundedRectangle(cornerRadius: radius + Theme.ringOffset, style: .continuous)
                             .stroke(Theme.ring, lineWidth: Theme.ringWidth)
                     } else {
-                        Capsule().stroke(Theme.ring, lineWidth: Theme.ringWidth)
+                        RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous).stroke(Theme.ring, lineWidth: Theme.ringWidth)
                     }
                 }
                 .padding(-(Theme.ringOffset + Theme.ringWidth / 2))
@@ -122,7 +123,7 @@ struct PrimaryPillStyle: ButtonStyle {
                 .foregroundStyle(.black)
                 .padding(.horizontal, Theme.px(20))
                 .frame(height: Theme.px(40))
-                .background(Capsule().fill(.white))
+                .background(RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous).fill(.white))
                 .focusRing(focused)
                 .opacity(configuration.isPressed ? 0.8 : 1)
         }
@@ -138,8 +139,8 @@ struct SecondaryPillStyle: ButtonStyle {
                 .foregroundStyle(.white)
                 .padding(.horizontal, Theme.px(18))
                 .frame(height: Theme.px(40))
-                .background(Capsule().fill(focused ? Color.white.opacity(0.12) : Color.black.opacity(0.25)))
-                .overlay(Capsule().stroke(Theme.gray700, lineWidth: Theme.px(1)))
+                .background(RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous).fill(focused ? Color.white.opacity(0.12) : Color.black.opacity(0.25)))
+                .overlay(RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous).stroke(Theme.gray700, lineWidth: Theme.px(1)))
                 .focusRing(focused)
                 .opacity(configuration.isPressed ? 0.8 : 1)
         }
@@ -157,7 +158,7 @@ struct SoftPillStyle: ButtonStyle {
                 .foregroundStyle(selected || focused ? .white : Theme.gray200)
                 .padding(.horizontal, Theme.px(13))
                 .frame(height: Theme.px(32))
-                .background(Capsule().fill(selected ? Color.white.opacity(0.18) : Theme.gray800))
+                .background(RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous).fill(selected ? Color.white.opacity(0.18) : Theme.gray800))
                 .focusRing(focused)
                 .opacity(configuration.isPressed ? 0.8 : 1)
         }

@@ -453,6 +453,7 @@ struct FavouritesView: View {
                 if !items.isEmpty {
                     ItemRow(row: HomeRow(id: "saved", title: "Saved titles", items: items))
                 }
+                CollectionShelf(grid: true)
                 if !recommendations.isEmpty {
                     ItemRow(row: HomeRow(id: "recommended", title: "Recommended for you", items: recommendations))
                 } else if !loading && error == nil {

@@ -50,6 +50,7 @@ enum Place: String, CaseIterable, Identifiable {
 private enum SidebarFocus: Hashable {
     case destination(Place)
     case toggle
+    case profile
 }
 
 /// Persistent expanded/icon-only navigation with a separate focus identity for its toggle.
@@ -64,6 +65,7 @@ struct MainView: View {
     @FocusState private var railFocus: SidebarFocus?
     /// What a card's menu asked to play, from any page.
     @State private var choice: VersionChoice?
+    @State private var showingProfiles = false
     @Namespace private var railScope
     /// The whole screen, rail and page, which focus is re-picked within after a rail choice.
     @Namespace private var shellScope
@@ -102,6 +104,7 @@ struct MainView: View {
             // The page is where focus goes when the shell picks it again, rather than the rail.
             .prefersDefaultFocus(true, in: shellScope)
             .environment(\.openPlace, { place = $0 })
+            .environment(\.openProfiles, { showingProfiles = true })
             .environment(\.openRoute, { route in
                 var path = paths[place] ?? NavigationPath()
                 path.append(route)
@@ -148,8 +151,12 @@ struct MainView: View {
         )) { Button("OK") { session.saveError = nil } } message: {
             Text(session.saveError ?? "")
         }
+        .fullScreenCover(isPresented: $showingProfiles) {
+            ProfilePickerView().environmentObject(session).environmentObject(prefs)
+        }
         .task { await findLiveTV() }
         .task {
+            prefs.resetForProfile()
             if let client = session.client, let userId = session.userId {
                 prefs.loadSidebar(client: client, userId: userId)
             }
@@ -167,8 +174,8 @@ struct MainView: View {
                     .font(Theme.font(Theme.base, .medium))
                     .padding(.horizontal, Theme.px(20))
                     .padding(.vertical, Theme.px(12))
-                    .background(Capsule().fill(Color(white: 17 / 255).opacity(0.95)))
-                    .overlay(Capsule().stroke(.white.opacity(0.1), lineWidth: Theme.px(1)))
+                    .background(RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous).fill(Color(white: 17 / 255).opacity(0.95)))
+                    .overlay(RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous).stroke(.white.opacity(0.1), lineWidth: Theme.px(1)))
                     .padding(.bottom, Theme.px(40))
                     .transition(.opacity)
             }
@@ -272,6 +279,18 @@ struct MainView: View {
                 .focused($railFocus, equals: .toggle)
                 .focusRing(railFocus == .toggle, radius: Theme.px(12))
                 .accessibilityLabel(open ? "Collapse sidebar" : "Expand sidebar")
+                Button { showingProfiles = true } label: {
+                    HStack(spacing: Theme.px(12)) {
+                        Image(systemName: "person.crop.circle.fill")
+                            .font(.system(size: Theme.px(26)))
+                            .frame(width: Theme.px(56), height: Theme.px(48))
+                        if open { Text(session.userName ?? "Profiles").font(Theme.font(Theme.base, .medium)).lineLimit(1) }
+                    }
+                }
+                .buttonStyle(RailButtonStyle())
+                .focused($railFocus, equals: .profile)
+                .focusRing(railFocus == .profile, radius: Theme.px(12))
+                .accessibilityLabel("Switch profile")
                 ForEach(visiblePlaces) { entry($0) }
             }
             .padding(.horizontal, Theme.px(12))
@@ -365,12 +384,12 @@ private struct RailEntry: View {
         // Drawn past the button's own frame, which focus moves are measured from. The page you're
         // on is filled; where the remote is gets the app's focus ring, so the two never look alike.
         .background(alignment: .leading) {
-            Capsule()
+            RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous)
                 .fill(Color.white.opacity(current ? 0.12 : 0))
                 .frame(width: open ? Self.openWidth : Self.width, height: Theme.px(48))
                 .overlay {
                     if focused {
-                        Capsule()
+                        RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous)
                             .strokeBorder(Theme.ring, lineWidth: Theme.ringWidth)
                             .padding(-(Theme.ringWidth + Theme.ringOffset))
                     }

@@ -17,11 +17,11 @@ struct AIOStreamsTVApp: App {
                 switch session.stage {
                 case .needsServer: ServerView()
                 case .needsSignIn: SignInView()
-                case .signedIn: MainView()
+                case .signedIn: MainView().id(session.userId)
                 }
             }
             // The web app's theme colours, once they've loaded.
-            .id(prefs.themeKey)
+
             .environmentObject(session)
             .environmentObject(prefs)
             .preferredColorScheme(.dark)

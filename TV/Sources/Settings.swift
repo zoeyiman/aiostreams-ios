@@ -8,6 +8,23 @@ import SwiftUI
 
 @MainActor
 final class Preferences: ObservableObject {
+    @Published var tvSubtitleScale: Double = UserDefaults.standard.object(forKey: "tv.subtitle.scale") as? Double ?? 0.6 {
+        didSet { UserDefaults.standard.set(tvSubtitleScale, forKey: "tv.subtitle.scale") }
+    }
+
+    func resetForProfile() {
+        profileGeneration = UUID()
+        pushTask?.cancel()
+        client = nil
+        userId = nil
+        custom = [:]
+        configuration = [:]
+        loaded = false
+        sidebarKey = nil
+        sidebarVisibility = [:]
+        Theme.apply(accent: nil, background: nil)
+    }
+
     /// The web app's synced settings, by its keys; a default is left out, as it leaves it.
     @Published private(set) var custom: [String: String] = [:]
     /// The user's Jellyfin configuration, sent back whole when it changes.
@@ -44,19 +61,26 @@ final class Preferences: ObservableObject {
     private var client: JellyfinClient?
     private var userId: String?
     private var pushTask: Task<Void, Never>?
+    private var profileGeneration = UUID()
 
     func load(client: JellyfinClient, userId: String) async {
         loadSidebar(client: client, userId: userId)
+        let generation = UUID()
+        profileGeneration = generation
         self.client = client
         self.userId = userId
         if let prefs = try? await client.json("GET", "/DisplayPreferences/\(Self.prefsId)", ["client": Self.prefsId, "userId": userId]),
            let saved = prefs["CustomPrefs"] as? [String: Any] {
+            guard generation == profileGeneration, !Task.isCancelled else { return }
             custom = saved.compactMapValues { $0 as? String }
         }
+        guard generation == profileGeneration, !Task.isCancelled else { return }
         Theme.apply(accent: accentColor, background: backgroundColor)
         if let me = try? await client.json("GET", "/Users/Me") {
+            guard generation == profileGeneration, !Task.isCancelled else { return }
             configuration = me["Configuration"] as? [String: Any] ?? [:]
         }
+        guard generation == profileGeneration, !Task.isCancelled else { return }
         loaded = true
     }
 
@@ -255,6 +279,7 @@ final class Preferences: ObservableObject {
     var subtitleLook: SubtitleLook {
         var look = SubtitleLook()
         look.scale = ["small": 0.8, "normal": 1, "large": 1.25, "huge": 1.5][text("subtitleSize", "normal")] ?? 1
+        look.scale *= tvSubtitleScale
         look.bold = flag("subtitleBold", false)
         look.color = JSON.color(text("subtitleColor", "#ffffff")) ?? .white
         look.outlineColor = JSON.color(text("subtitleOutlineColor", "#000000")) ?? .black
@@ -304,6 +329,7 @@ struct SettingsView: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
     @State private var chooser: Chooser?
+    @Environment(\.openProfiles) private var openProfiles
 
     var body: some View {
         ScrollView {
@@ -385,6 +411,13 @@ struct SettingsView: View {
                         .font(Theme.font(Theme.sm))
                         .foregroundStyle(Theme.gray400)
                         .padding(.horizontal, Theme.px(16))
+                }
+                section("Apple TV subtitles", note: "Size adjustment for this Apple TV only. Your web and phone subtitle settings stay unchanged.") {
+                    row("Text size", value: "\(Int(prefs.tvSubtitleScale * 100))%") {
+                        chooser = Chooser(title: "Apple TV subtitle size", options: [0.45, 0.6, 0.75, 1.0, 1.25].map {
+                            ("\(Int($0 * 100))%" + ($0 == 0.6 ? " (Default)" : ""), String($0))
+                        }, current: String(prefs.tvSubtitleScale)) { prefs.tvSubtitleScale = Double($0) ?? 0.6 }
+                    }
                 }
                 section("Subtitle style", note: "The same style as the web app's, on every device you sign in to.") {
                     synced("Size", key: "subtitleSize", fallback: "normal",
@@ -468,7 +501,7 @@ struct SettingsView: View {
                     fact("Server", session.serverName ?? session.client?.base.host ?? "")
                     fact("Signed in as", session.userName ?? "")
                     HStack(spacing: Theme.px(8)) {
-                        Button("Switch user") { session.signOut() }.buttonStyle(SoftPillStyle())
+                        Button("Switch profile") { openProfiles() }.buttonStyle(SoftPillStyle())
                         Button("Change server") { session.forgetServer() }.buttonStyle(SoftPillStyle())
                     }
                     .padding(.top, Theme.px(4))

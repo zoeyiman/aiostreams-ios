@@ -76,3 +76,41 @@ On a paired Apple TV, also verify:
 - Confirm those channels never appear in Home, My Library or recommendations; switch
   server/user and verify that local channel history is isolated.
 - Check focus rings and hero text at both sidebar widths, with Reduce Motion and VoiceOver.
+
+## Changes after Apple TV testing
+
+Collection containers (`BoxSet`, `CollectionFolder`, `Folder`) are retained when browsing,
+while the stricter Movie/Series/Episode allowlist still protects saved titles and recommendations
+from live channels. Home includes a Your collections shelf; My Library includes a collection
+grid. Both use the server's user views and paginated box-set collection results.
+
+The profile control above Home and Settings → Account → Switch profile open AIOStreams'
+authenticated profile picker. It uses `/AIOStreams/Users` and `/AIOStreams/Token`, retaining
+server authentication while requesting each profile's PIN/password where required. Only a
+confirmed switch changes the session. Servers returning 404/405 for the picker fall back to
+Jellyfin's public users. New profile sessions reset navigation, saved-state caches and user
+preferences. Cancelling the picker keeps the current profile signed in.
+
+Live TV Channels now uses a two-column browser: channels/current/next/progress on the left,
+inline playback and programme description/time/progress on the right. Select a channel once
+to start the preview, then select it again or use Full screen to expand the same player.
+Back returns from full screen to the existing preview; Stop ends playback. Group selection,
+favorites and Recently Watched remain within Live TV; Guide switches to the timeline.
+The first frame in the preview counts as successfully started playback for local history.
+
+Settings → Apple TV subtitles → Text size defaults to 60% of the synced web subtitle scale,
+with 45%, 60%, 75%, 100% and 125% options. This local multiplier affects text subtitles, not
+bitmap subtitles, and never rewrites the web/phone's subtitle size. UI typography now uses
+Apple's system font; controls and sidebar selection use rounded rectangles with white focus
+outlines instead of the former Inter/pill treatment.
+
+Regression checks added after this feedback cover retaining collection containers, decoding
+AIOStreams PIN/password profile responses, live programme descriptions, and local subtitle
+scaling. The tvOS tests GitHub Actions workflow builds and runs the native suite on macOS;
+check its actual run result before treating compilation or tests as passed. Linux syntax checks
+are not a replacement for native tests or an Apple TV interaction check.
+
+On Apple TV, verify a protected profile, cancellation, profile-specific collections/history,
+collection contents, a failed channel, rapid group changes, and repeated preview/full-screen/
+Back cycles. Confirm a single stream continues without restarting on expansion. Also check
+subtitle size on both plain text and styled subtitles; bitmap subtitles retain their source sizing.

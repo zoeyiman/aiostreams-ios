@@ -92,6 +92,7 @@ struct HomeView: View {
                     // Nothing to play yet, so a card opens its show.
                     WideRow(title: "Upcoming", items: upcoming, upcoming: true, play: openShow) { EmptyView() }
                 }
+                CollectionShelf()
                 ForEach(libraries) { row in
                     ItemRow(row: row)
                 }
@@ -158,7 +159,7 @@ struct HomeView: View {
                             "Limit": "24",
                             "Fields": "Overview,Genres",
                         ])
-                        return (index, view, (result?.items ?? []).filter(\.isOnDemand))
+                        return (index, view, (result?.items ?? []).filter(\.isCatalogueEntry))
                     }
                 }
                 for await (index, view, items) in group {

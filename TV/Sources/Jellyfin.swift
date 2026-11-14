@@ -76,6 +76,8 @@ struct Item: Decodable, Identifiable, Hashable {
     var isChannel: Bool { type == "TvChannel" }
     /// Positive allowlist: live programmes and channels cannot leak into title collections.
     var isOnDemand: Bool { ["Movie", "Series", "Episode"].contains(type ?? "") }
+    /// Browsing also includes collection containers, without admitting live programmes/channels.
+    var isCatalogueEntry: Bool { isOnDemand || isFolder }
 
     /// An episode not started, which the web app's spoiler blur hides until it has focus.
     var unstarted: Bool { isEpisode && userData?.played != true && (userData?.playbackPositionTicks ?? 0) == 0 }
@@ -156,6 +158,7 @@ struct RemoteTrailer: Decodable, Hashable {
 
 /// What a channel shows now, as the channel list sends it along (`AddCurrentProgram`).
 struct Programme: Decodable, Hashable {
+    var overview: String?
     var id: String
     var name: String?
     var episodeTitle: String?
@@ -322,6 +325,13 @@ struct PublicUser: Decodable, Identifiable, Hashable {
     var primaryImageTag: String?
 }
 
+struct PickableProfile: Decodable, Identifiable {
+    var user: PublicUser
+    var avatar: String?
+    var needs: String?
+    var id: String { user.id }
+}
+
 struct AuthResult: Decodable {
     struct User: Decodable {
         var id: String
@@ -436,11 +446,16 @@ struct JellyfinClient: Sendable {
     private func send<T: Decodable>(_ method: String, _ path: String, query: [String: String?], body: [String: Any]?) async throws -> T {
         let data = try await raw(method, path, query: query, body: body)
         do {
-            return try Self.decoder.decode(T.self, from: data.isEmpty ? Data("{}".utf8) : data)
+            return try Self.decodeResponse(data, as: T.self)
         } catch {
             AppLog.warn("api", "\(path): could not read the answer: \(error)")
             throw JellyfinError(status: 0, message: "The server sent something unexpected.")
         }
+    }
+
+    /// One decoder for API responses and regression fixtures.
+    static func decodeResponse<T: Decodable>(_ data: Data, as type: T.Type) throws -> T {
+        try decoder.decode(type, from: data.isEmpty ? Data("{}".utf8) : data)
     }
 
     private func raw(_ method: String, _ path: String, query: [String: String?], body: [String: Any]?) async throws -> Data {
