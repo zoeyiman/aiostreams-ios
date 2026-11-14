@@ -23,6 +23,7 @@ struct ProfilePickerView: View {
     @State private var working = false
     @State private var error: String?
     @State private var legacy = false
+    @State private var switchTask: Task<Void, Never>?
 
     var body: some View {
         ZStack {
@@ -75,12 +76,15 @@ struct ProfilePickerView: View {
                 if !loading && error != nil && selected == nil {
                     Button("Try again") { Task { await load() } }.buttonStyle(SecondaryPillStyle())
                 }
-                Button("Cancel") { dismiss() }.buttonStyle(SecondaryPillStyle()).disabled(working)
+                Button("Cancel") { switchTask?.cancel(); dismiss() }.buttonStyle(SecondaryPillStyle())
             }
             .padding(Theme.px(56))
         }
         .task { await load() }
+        .onDisappear { switchTask?.cancel() }
         .onExitCommand {
+            switchTask?.cancel()
+            working = false
             if selected != nil { selected = nil; secret = ""; error = nil } else { dismiss() }
         }
     }
@@ -114,7 +118,7 @@ struct ProfilePickerView: View {
         working = true
         error = nil
         let password = secret
-        Task { @MainActor in
+        switchTask = Task { @MainActor in
             defer { working = false }
             do {
                 let result: AuthResult
@@ -125,10 +129,12 @@ struct ProfilePickerView: View {
                     if profile.needs != nil { body["Pw"] = password }
                     result = try await client.post("/AIOStreams/Token", body: body)
                 }
+                try Task.checkCancellation()
                 secret = ""
                 prefs.resetForProfile()
                 session.signIn(result)
                 dismiss()
+            } catch is CancellationError {
             } catch { self.error = error.localizedDescription }
         }
     }

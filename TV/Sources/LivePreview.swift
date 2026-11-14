@@ -24,6 +24,7 @@ final class LivePreview: ObservableObject {
             }
             let named = try await client.playbackInfo(userId: userId, itemId: channel.id, sourceId: source.ownId)
             try Task.checkCancellation()
+            guard current == generation else { return }
             let selected = named.mediaSources?.first(where: { $0.ownId == source.ownId }) ?? named.mediaSources?.first ?? source
             let request = PlayRequest(item: channel, source: selected,
                                       playSessionId: named.playSessionId ?? info.playSessionId, startMs: nil)

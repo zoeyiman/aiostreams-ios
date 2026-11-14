@@ -69,6 +69,28 @@ jobs:
             -jobs 2 -parallel-testing-enabled NO \
             -resultBundlePath build/tvos-tests.xcresult \
             CODE_SIGNING_ALLOWED=NO | tee build/tvos-tests.log
+      - name: Report Swift build and test errors
+        if: failure()
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import re
+          log = Path('build/tvos-tests.log')
+          if log.exists():
+              count = 0
+              for line in log.read_text(errors='replace').splitlines():
+                  match = re.search(r'([^\s]+\.swift):(\d+)(?::(\d+))?: error: (.*)', line)
+                  if not match:
+                      continue
+                  path, row, column, message = match.groups()
+                  if '/TV/' in path:
+                      path = 'TV/' + path.split('/TV/', 1)[1]
+                  message = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print(f'::error file={path},line={row},col={column or "1"}::{message}')
+                  count += 1
+                  if count >= 30:
+                      break
+          PYTHON
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -228,7 +228,7 @@ struct LiveTVView: View {
             Button("All channels") { choose(ChannelGroup.all) }
                 .buttonStyle(SoftPillStyle(selected: group == ChannelGroup.all))
             Button { choosingGroup = true } label: {
-                Label(groups.first { $0.id == group }?.name ?? "Channel group", systemImage: "chevron.down")
+                Label(group == ChannelGroup.all ? "Choose group" : (groups.first { $0.id == group }?.name ?? "Channel group"), systemImage: "chevron.down")
             }
             .buttonStyle(SecondaryPillStyle())
             if !recentChannels.isEmpty {
