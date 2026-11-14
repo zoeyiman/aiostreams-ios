@@ -23,7 +23,8 @@ concurrency:
 
 jobs:
   test:
-    runs-on: macos-26
+    # Match the supported engine toolchain used by the IPA workflow.
+    runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
