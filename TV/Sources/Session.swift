@@ -17,6 +17,42 @@ final class Session: ObservableObject {
     private(set) var client: JellyfinClient?
     private(set) var userId: String?
 
+    @Published private var savedIDs: Set<String>?
+    @Published private var savedOverrides: [String: Bool] = [:]
+    @Published private(set) var saving = Set<String>()
+    @Published var saveError: String?
+    private var profileGeneration = UUID()
+
+    func isSaved(_ item: Item) -> Bool {
+        savedIDs?.contains(item.id) ?? savedOverrides[item.id] ?? (item.userData?.isFavorite == true)
+    }
+
+    /// Watchlist and Favorites are two labels for this single server-backed collection.
+    func setSaved(_ item: Item, saved: Bool) async {
+        guard item.isOnDemand, !saving.contains(item.id), let client, let userId else { return }
+        let generation = profileGeneration
+        saving.insert(item.id)
+        defer { if generation == profileGeneration { saving.remove(item.id) } }
+        do {
+            try await client.call(saved ? "POST" : "DELETE", "/UserFavoriteItems/\(item.id)", ["userId": userId])
+            guard generation == profileGeneration, self.userId == userId, self.client?.base == client.base else { return }
+            savedOverrides[item.id] = saved
+            if savedIDs != nil {
+                if saved { savedIDs?.insert(item.id) } else { savedIDs?.remove(item.id) }
+            }
+            NotificationCenter.default.post(name: .watchStateChanged, object: nil)
+        } catch {
+            guard generation == profileGeneration else { return }
+            saveError = error.localizedDescription
+        }
+    }
+
+    /// A fresh server response supersedes local state from earlier mutations.
+    func reconcileSaved(_ items: [Item]) {
+        savedIDs = Set(items.filter(\.isOnDemand).map(\.id))
+        savedOverrides = [:]
+    }
+
     private let defaults = UserDefaults.standard
 
     init() {
@@ -66,6 +102,11 @@ final class Session: ObservableObject {
     }
 
     func signOut() {
+        profileGeneration = UUID()
+        saving = []
+        savedOverrides = [:]
+        savedIDs = nil
+        saveError = nil
         if let client, client.token != nil {
             Task { await client.fire("/Sessions/Logout", body: [:]) }
         }

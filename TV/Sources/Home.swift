@@ -37,9 +37,6 @@ struct HomeView: View {
     @State private var upcoming: [Item] = []
     @Environment(\.openRoute) private var openRoute
     @Environment(\.openPlace) private var openPlace
-    /// Favourite channels, then ones played here lately, with what's on: on a server with Live TV.
-    @State private var channels: [Item] = []
-    @State private var airing: [String: Item] = [:]
     @State private var libraries: [HomeRow] = []
     @State private var loading = true
     @State private var error: String?
@@ -73,7 +70,7 @@ struct HomeView: View {
     }
 
     private var rows: some View {
-            LazyVStack(alignment: .leading, spacing: Theme.px(40)) {
+            LazyVStack(alignment: .leading, spacing: Theme.sectionGap) {
                 if !hero.isEmpty && !following {
                     HeroCarousel(items: hero, play: play)
                         // Rows sit just under it.
@@ -90,14 +87,6 @@ struct HomeView: View {
                 }
                 if !merging && !nextUp.isEmpty {
                     WideRow(title: "Next up", items: nextUp, play: play) { EmptyView() }
-                }
-                if !channels.isEmpty {
-                    LiveRow(channels: channels, airing: airing, play: playChannel) {
-                        Button { openPlace(.live) } label: {
-                            Label("All channels", systemImage: "play.tv")
-                        }
-                        .buttonStyle(SoftPillStyle())
-                    }
                 }
                 if !upcoming.isEmpty {
                     // Nothing to play yet, so a card opens its show.
@@ -124,35 +113,6 @@ struct HomeView: View {
             .padding(.bottom, Theme.px(64))
     }
 
-    /// The Live TV row's channels, as the web app's: favourites, then those played here lately.
-    private func loadChannels(client: JellyfinClient, userId: String) async {
-        let limit = 20
-        let favourites: ItemsResult? = try? await client.get("/LiveTv/Channels", [
-            "userId": userId, "IsFavorite": "true", "Limit": String(limit), "AddCurrentProgram": "true",
-        ])
-        let recentIds = RecentChannels.ids
-        var recents: [Item] = []
-        if !recentIds.isEmpty {
-            let found: ItemsResult? = try? await client.get("/Items", ["userId": userId, "Ids": recentIds.joined(separator: ",")])
-            let byId = Dictionary((found?.items ?? []).map { ($0.id, $0) }) { first, _ in first }
-            recents = recentIds.compactMap { byId[$0] }.filter(\.isChannel)
-        }
-        var seen = Set<String>()
-        let row = (favourites?.items ?? []) + recents
-        channels = Array(row.filter { seen.insert($0.id).inserted }.prefix(limit))
-        // What's on each now, in one ask, as recent channels come without it.
-        guard !channels.isEmpty else { return }
-        let now: ItemsResult? = try? await client.post("/LiveTv/Programs", body: [
-            "UserId": userId, "ChannelIds": channels.map(\.id), "IsAiring": true, "Fields": ["Overview"],
-        ])
-        airing = Dictionary((now?.items ?? []).compactMap { programme in programme.channelId.map { ($0, programme) } }) { first, _ in first }
-    }
-
-    private func playChannel(_ channel: Item) {
-        RecentChannels.note(channel.id)
-        choice = VersionChoice(item: channel, startMs: nil, mode: .straight)
-    }
-
     /// An upcoming episode's show, or the title itself.
     private func openShow(_ item: Item) {
         if let series = item.seriesId {
@@ -176,14 +136,12 @@ struct HomeView: View {
             async let nextResult: ItemsResult = client.get("/Shows/NextUp", ["userId": userId, "Limit": "24", "EnableResumable": "false"])
             async let upcomingResult: ItemsResult = client.get("/Shows/Upcoming", ["userId": userId, "Limit": "24"])
             async let viewsResult: ItemsResult = client.get("/UserViews", ["userId": userId])
-            resume = (try? await resumeResult.items) ?? []
-            nextUp = (try? await nextResult.items) ?? []
-            upcoming = (try? await upcomingResult.items) ?? []
+            resume = ((try? await resumeResult.items) ?? []).filter(\.isOnDemand)
+            nextUp = ((try? await nextResult.items) ?? []).filter(\.isOnDemand)
+            upcoming = ((try? await upcomingResult.items) ?? []).filter(\.isOnDemand)
             let allViews = try await viewsResult.items ?? []
             let views = allViews.filter(isBrowsable)
-            if allViews.contains(where: { $0.collectionType == "livetv" }) {
-                Task { await loadChannels(client: client, userId: userId) }
-            }
+
 
             // Each library's head, in the configuration's order, as each arrives.
             var heads: [Int: (Item, [Item])] = [:]
@@ -200,7 +158,7 @@ struct HomeView: View {
                             "Limit": "24",
                             "Fields": "Overview,Genres",
                         ])
-                        return (index, view, result?.items ?? [])
+                        return (index, view, (result?.items ?? []).filter(\.isOnDemand))
                     }
                 }
                 for await (index, view, items) in group {
@@ -254,6 +212,7 @@ struct HeroCarousel: View {
     var followed: Item? = nil
     var height: CGFloat = HeroCarousel.height
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var index = 0
     @FocusState private var focus: HeroAction?
 
@@ -274,12 +233,10 @@ struct HeroCarousel: View {
         }
         .frame(height: height)
         .frame(maxWidth: .infinity)
-        // Under the rail, as the web app's hero is.
-        .padding(.leading, -Theme.px(80))
         .clipped()
-        .animation(.easeInOut(duration: 0.6), value: index)
-        .task(id: "\(index)-\(focus == nil)") {
-            guard focus == nil, items.count > 1, followed == nil else { return }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.6), value: index)
+        .task(id: "\(index)-\(focus == nil)-\(reduceMotion)") {
+            guard !reduceMotion, focus == nil, items.count > 1, followed == nil else { return }
             try? await Task.sleep(for: .seconds(prefs.heroSeconds))
             guard !Task.isCancelled, focus == nil else { return }
             index = (index + 1) % items.count
@@ -287,20 +244,11 @@ struct HeroCarousel: View {
         .onChange(of: items.map(\.id)) { _, _ in index = 0 }
     }
 
-    /// The backdrop sits right, no wider than 2.6 times its height, fading in from the left.
+    /// Full-bleed cinematic artwork; separate gradients keep text legible without shrinking it.
     private var backdrop: some View {
         GeometryReader { geometry in
-            let width = min(geometry.size.width, height * 2.6)
             RemoteImage(url: session.client?.backdrop(item, height: 1080))
-                .frame(width: width, height: height)
-                .mask(
-                    LinearGradient(
-                        stops: [.init(color: .clear, location: 0), .init(color: .black, location: Theme.px(192) / width)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .frame(width: geometry.size.width, height: height)
                 .id(item.id)
                 .transition(.opacity)
         }
@@ -311,7 +259,7 @@ struct HeroCarousel: View {
             LinearGradient(
                 stops: [
                     .init(color: Theme.background, location: 0),
-                    .init(color: Theme.background.opacity(0.7), location: 0.35),
+                    .init(color: Theme.background.opacity(0.82), location: 0.4),
                     .init(color: .clear, location: 1),
                 ],
                 startPoint: .leading,
@@ -332,7 +280,11 @@ struct HeroCarousel: View {
     }
 
     private var details: some View {
-        VStack(alignment: .leading, spacing: Theme.px(16)) {
+        VStack(alignment: .leading, spacing: Theme.px(20)) {
+            Text("FEATURED")
+                .font(Theme.font(Theme.xs, .semibold))
+                .tracking(Theme.px(3))
+                .foregroundStyle(Theme.gray300)
             TitleLogo(item: item, maxHeight: Theme.px(112), maxWidth: Theme.px(384), titleSize: 48)
             HeroMeta(item: item)
             if let overview = item.overview, !overview.isEmpty {
@@ -369,8 +321,8 @@ struct HeroCarousel: View {
             }
             .focusSection()
         }
-        .frame(maxWidth: Theme.px(768), alignment: .leading)
-        .padding(.leading, Theme.px(80) + pageInset)
+        .frame(maxWidth: Theme.px(640), alignment: .leading)
+        .padding(.leading, Theme.px(24))
         .padding(.bottom, Theme.px(56))
     }
 
@@ -540,7 +492,7 @@ struct WideCard: View {
                     }
                 }
                 .frame(width: Self.size.width, height: Self.size.height)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
             }
             .buttonStyle(CardStyle())
             .focused($focused)
@@ -578,94 +530,6 @@ func untilLabel(_ date: Date) -> String {
     case 1: return "tomorrow"
     case ..<14: return "in \(days) days"
     default: return "in \(Int((Double(days) / 7).rounded())) weeks"
-    }
-}
-
-/// Channels as wide cards: the logo over a dark tile, the channel's name and what's on, with how far
-/// through it is. Selecting one plays it live.
-struct LiveRow<Action: View>: View {
-    let channels: [Item]
-    let airing: [String: Item]
-    let play: (Item) -> Void
-    @ViewBuilder let action: () -> Action
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.px(12)) {
-            HStack {
-                Text("Live TV").font(Theme.font(Theme.xl, .semibold))
-                Spacer()
-                action()
-            }
-            .pagePadding()
-            .focusSection()
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                    ForEach(channels) { channel in
-                        ChannelCard(channel: channel, airing: airing[channel.id]) { play(channel) }
-                    }
-                }
-                .pagePadding()
-                .padding(.vertical, Theme.px(8))
-            }
-            .edgeToEdge()
-        }
-        .focusSection()
-    }
-}
-
-private struct ChannelCard: View {
-    let channel: Item
-    let airing: Item?
-    let action: () -> Void
-
-    /// What's on: from the guide, else what the channel list sent along.
-    private var programme: (name: String, start: Date?, end: Date?)? {
-        if let airing { return (airing.name ?? "", airing.starts, airing.ends) }
-        if let current = channel.currentProgram { return (current.name ?? "", current.starts, current.ends) }
-        return nil
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.px(8)) {
-            Button(action: action) {
-                ZStack(alignment: .bottom) {
-                    ZStack {
-                        Theme.gray900
-                        ChannelLogo(channel: channel)
-                            .frame(width: Theme.px(160), height: Theme.px(90))
-                    }
-                    .frame(width: WideCard.size.width, height: WideCard.size.height)
-                    if let programme {
-                        GeometryReader { geometry in
-                            ZStack(alignment: .leading) {
-                                Rectangle().fill(.white.opacity(0.25))
-                                Rectangle().fill(Theme.brand500)
-                                    .frame(width: geometry.size.width * airedShare(from: programme.start, to: programme.end, now: Date()))
-                            }
-                        }
-                        .frame(height: Theme.px(4))
-                    }
-                }
-                .frame(width: WideCard.size.width, height: WideCard.size.height)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous))
-            }
-            .buttonStyle(CardStyle())
-            VStack(alignment: .leading, spacing: Theme.px(2)) {
-                HStack(spacing: Theme.px(6)) {
-                    if let number = channel.channelNumber {
-                        Text(number).foregroundStyle(Theme.gray400).monospacedDigit()
-                    }
-                    Text(channel.name ?? "").lineLimit(1)
-                }
-                .font(Theme.font(15, .semibold))
-                Text(programme?.name ?? "Live")
-                    .font(Theme.font(13))
-                    .foregroundStyle(Theme.gray400)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, Theme.px(2))
-            .frame(width: WideCard.size.width, alignment: .leading)
-        }
     }
 }
 

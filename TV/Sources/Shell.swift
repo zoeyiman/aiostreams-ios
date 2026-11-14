@@ -1,57 +1,67 @@
 import SwiftUI
 
-/// The places the rail leads to, in the web app's order (components/layout.tsx).
+/// Default destinations plus optional pages the user can enable.
 enum Place: String, CaseIterable, Identifiable {
-    case account, home, discover, live, search, favourites, calendar, activity, settings
+    case home, live, favourites, search, settings, discover, playlists, calendar, activity
 
     var id: String { rawValue }
 
-    static let main: [Place] = [.home, .discover, .live, .search, .favourites, .calendar, .activity]
+    static let main: [Place] = [.home, .live, .favourites, .search, .settings]
 
-    /// What the start page setting offers, as the web app's (lib/start-page.ts).
-    static let startPages: [Place] = [.home, .discover, .live, .favourites, .calendar, .activity]
+    static let optional: [Place] = [.discover, .playlists, .calendar, .activity]
+    static let sidebar: [Place] = [.home, .live, .favourites, .search] + optional + [.settings]
+    static let startPages: [Place] = [.home, .live, .favourites] + optional
+    var canHide: Bool { self != .home && self != .settings }
+
+    static func visible(overrides: [String: Bool]) -> [Place] {
+        sidebar.filter { !$0.canHide || (overrides[$0.rawValue] ?? main.contains($0)) }
+    }
 
     var name: String {
         switch self {
-        case .account: return "You"
         case .home: return "Home"
-        case .discover: return "Discover"
         case .live: return "Live TV"
         case .search: return "Search"
-        case .favourites: return "Favourites"
+        case .favourites: return "My Library"
+        case .settings: return "Settings"
+        case .discover: return "Discover"
+        case .playlists: return "Playlists"
         case .calendar: return "Calendar"
         case .activity: return "Activity"
-        case .settings: return "Settings"
         }
     }
 
     /// SF Symbols standing in for the web app's BoxIcons.
     var icon: String {
         switch self {
-        case .account: return "person.crop.circle"
         case .home: return "house"
-        case .discover: return "safari"
         case .live: return "play.tv"
         case .search: return "magnifyingglass"
-        case .favourites: return "heart"
+        case .favourites: return "rectangle.stack"
+        case .settings: return "gearshape"
+        case .discover: return "safari"
+        case .playlists: return "list.bullet.rectangle"
         case .calendar: return "calendar"
         case .activity: return "clock.arrow.circlepath"
-        case .settings: return "gearshape"
         }
     }
 }
 
-/// The web app's TV layout with its default navigation, the docked rail: icons down the
-/// side that open out with names, over a shade, while the rail has focus.
+private enum SidebarFocus: Hashable {
+    case destination(Place)
+    case toggle
+}
+
+/// Persistent expanded/icon-only navigation with a separate focus identity for its toggle.
 struct MainView: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
-    /// Opens on the start page; Live TV falls back to Home on a server without it.
+    /// Opens on a supported start page; legacy destinations fall back to Home.
     @State private var place: Place = Place(rawValue: UserDefaults.standard.string(forKey: "app.startPage") ?? "") ?? .home
-    /// The server's Live TV library, which only a server with channels lists.
+    /// The server's Live TV library, when available.
     @State private var liveView: Item?
     @State private var paths: [Place: NavigationPath] = [:]
-    @FocusState private var railFocus: Place?
+    @FocusState private var railFocus: SidebarFocus?
     /// What a card's menu asked to play, from any page.
     @State private var choice: VersionChoice?
     @Namespace private var railScope
@@ -65,7 +75,10 @@ struct MainView: View {
     @State private var exitArmed = false
     @State private var exitHint: Task<Void, Never>?
 
-    private var open: Bool { railFocus != nil }
+    @AppStorage("tv.sidebar.expanded") private var expanded = false
+    private var open: Bool { expanded }
+    private var visiblePlaces: [Place] { Place.visible(overrides: prefs.sidebarVisibility) }
+    private var railWidth: CGFloat { Theme.px(open ? 256 : 80) }
 
     /// Where the shade stops being solid: past the open rail's widest name.
     private static let solidShade = Theme.px(12 + 232 + 32)
@@ -97,11 +110,11 @@ struct MainView: View {
             .environment(\.playItem, { item, mode in
                 Task { choice = await playChoice(for: item, session: session, mode: mode) }
             })
-            .padding(.leading, Theme.px(80))
+            .padding(.leading, railWidth)
 
             // The rail's own column, which rows scrolled under it disappear beneath.
             Theme.background
-                .frame(width: Theme.px(80))
+                .frame(width: railWidth)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
@@ -130,8 +143,17 @@ struct MainView: View {
         .foregroundStyle(.white)
         .animation(.easeOut(duration: 0.2), value: open)
         .playFlow($choice) { NotificationCenter.default.post(name: .watchStateChanged, object: nil) }
+        .alert("Couldn’t update saved titles", isPresented: Binding(
+            get: { session.saveError != nil }, set: { if !$0 { session.saveError = nil } }
+        )) { Button("OK") { session.saveError = nil } } message: {
+            Text(session.saveError ?? "")
+        }
         .task { await findLiveTV() }
         .task {
+            if let client = session.client, let userId = session.userId {
+                prefs.loadSidebar(client: client, userId: userId)
+            }
+            if !visiblePlaces.contains(place) { place = .home }
             await startOnPage()
             guard let client = session.client, let userId = session.userId else { return }
             await prefs.load(client: client, userId: userId)
@@ -152,29 +174,36 @@ struct MainView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: exitArmed)
+        .onChange(of: visiblePlaces) { _, visible in
+            if !visible.contains(place) { place = .home }
+            if case .destination(let focused) = railFocus, !visible.contains(focused) {
+                railFocus = .destination(place)
+            }
+        }
     }
 
     @ViewBuilder private func page(_ place: Place) -> some View {
         switch place {
         case .home: HomeView()
-        case .discover: LibrariesView()
         case .live:
-            if let liveView { LiveTVView(view: liveView) } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
+            if let liveView { LiveTVView(view: liveView) } else {
+                ComingSoonView(title: "Live TV", text: "No channels are available on this server.")
+            }
         case .search: SearchView()
         case .favourites: FavouritesView()
+        case .settings: SettingsView()
+        case .discover: LibrariesView()
+        case .playlists: PlaylistsView()
         case .calendar: CalendarView()
         case .activity: ActivityView()
-        case .account, .settings: SettingsView()
         }
     }
 
-    /// Shows Live TV in the rail when the server has it, and leaves it when the start page asked
-    /// for Live TV on a server without.
+    /// The destination stays available even when this server has no channels.
     private func findLiveTV() async {
         guard let client = session.client, let userId = session.userId else { return }
         let views: ItemsResult? = try? await client.get("/UserViews", ["userId": userId])
         liveView = views?.items?.first { $0.collectionType == "livetv" }
-        if liveView == nil && place == .live { place = .home }
     }
 
     /// Screenshot mode only: opens the screen the launch asked for.
@@ -184,7 +213,7 @@ struct MainView: View {
         switch DemoMode.screen {
         case "rail":
             try? await Task.sleep(for: .seconds(1))
-            railFocus = .home
+            railFocus = .destination(.home)
         case "settings":
             place = .settings
         case "title", "movie":
@@ -208,7 +237,7 @@ struct MainView: View {
         railLocked = false
     }
 
-    /// Moves focus from the rail to the page just chosen, so the rail closes without a press right.
+    /// Moves focus from the rail to the page, retaining the chosen sidebar width.
     /// Focus is re-picked within the whole screen, where the page is the preferred default; a scope
     /// holding only the page wouldn't take focus from the rail. The rail is off meanwhile, so it
     /// can't be picked again, and a second try covers a page still appearing.
@@ -226,27 +255,40 @@ struct MainView: View {
     }
 
     private var rail: some View {
-        VStack(alignment: .leading, spacing: Theme.px(4)) {
-            BrandLogo(height: Theme.px(32))
-                .frame(width: Theme.px(24), height: Theme.px(32))
-                .padding(.horizontal, Theme.px(14))
-                .padding(.bottom, Theme.px(24))
-            entry(.account)
-            Rectangle().fill(.white.opacity(0.1)).frame(height: Theme.px(1))
-                .padding(.horizontal, Theme.px(12))
-                .padding(.vertical, Theme.px(4))
-            ForEach(Place.main.filter { $0 != .live || liveView != nil }) { entry($0) }
-            Spacer(minLength: 0)
-            entry(.settings)
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: Theme.px(4)) {
+                BrandLogo(height: Theme.px(32))
+                    .frame(width: Theme.px(24), height: Theme.px(32))
+                    .padding(.horizontal, Theme.px(14))
+                    .padding(.bottom, Theme.px(24))
+                Button {
+                    expanded.toggle()
+                } label: {
+                    Label(open ? "Collapse sidebar" : "Expand sidebar", systemImage: "sidebar.left")
+                        .labelStyle(.iconOnly)
+                        .frame(width: Theme.px(56), height: Theme.px(48))
+                }
+                .buttonStyle(RailButtonStyle())
+                .focused($railFocus, equals: .toggle)
+                .focusRing(railFocus == .toggle, radius: Theme.px(12))
+                .accessibilityLabel(open ? "Collapse sidebar" : "Expand sidebar")
+                ForEach(visiblePlaces) { entry($0) }
+            }
+            .padding(.horizontal, Theme.px(12))
+            .padding(.vertical, Theme.px(32))
+            // The rail keeps its icons' width when it opens: its names are drawn beside the buttons,
+            // not in them, so the page stays to their right and a press right reaches it.
+            .frame(width: railWidth, alignment: .leading)
         }
-        .padding(.horizontal, Theme.px(12))
-        .padding(.vertical, Theme.px(32))
-        // The rail keeps its icons' width when it opens: its names are drawn beside the buttons,
-        // not in them, so the page stays to their right and a press right reaches it.
-        .frame(width: Theme.px(80), alignment: .leading)
-        .frame(maxHeight: .infinity)
+        .scrollIndicators(.hidden)
+        .frame(width: railWidth)
+        .frame(maxHeight: .infinity, alignment: .top)
         .focusSection()
         .focusScope(railScope)
+        .onMoveCommand { direction in
+            if direction == .right { leaveRail() }
+            if direction == .left { expanded = false }
+        }
         // Off for a moment after a choice, which hands focus to the page; and in screenshot mode,
         // where the page takes focus as it does on a real Apple TV.
         .disabled(DemoMode.keepsRailShut || railLocked)
@@ -255,8 +297,11 @@ struct MainView: View {
     /// What Back does on a place's first page: from another place, go Home; on Home, leave,
     /// with "Prevent accidental exit" on only at a second press, as the Android TV app asks.
     private var exitAction: (() -> Void)? {
+        // Let NavigationStack pop detail screens before the shell handles Back.
         guard paths[place]?.isEmpty ?? true else { return nil }
-        if place != .home { return { place = .home } }
+        if railFocus == nil { return { railFocus = .destination(place); exitArmed = false } }
+        if expanded { return { expanded = false } }
+        if place != .home { return { place = .home; railFocus = .destination(.home) } }
         // Left to the system, Back leaves the app.
         guard prefs.preventAccidentalExit, !exitArmed else { return nil }
         return {
@@ -270,7 +315,6 @@ struct MainView: View {
     }
 
     private func entry(_ item: Place) -> some View {
-        // You and Settings open the same page; only the one chosen shows as current.
         let current = item == place
         return Button {
             if item == place {
@@ -280,17 +324,16 @@ struct MainView: View {
             place = item
             leaveRail()
         } label: {
-            RailEntry(item: item, current: current, open: open, avatar: avatarURL)
+            RailEntry(item: item, current: current, open: open)
         }
         .buttonStyle(RailButtonStyle())
-        .focused($railFocus, equals: item)
+        .accessibilityLabel(item.name)
+        .accessibilityValue(current ? "Selected" : "")
+        .focused($railFocus, equals: .destination(item))
         .prefersDefaultFocus(current, in: railScope)
     }
 
-    private var avatarURL: URL? {
-        guard let client = session.client, let userId = session.userId else { return nil }
-        return client.url("/Users/\(userId)/Images/Primary", ["fillHeight": "96", "quality": "90"])
-    }
+
 }
 
 private struct RailButtonStyle: ButtonStyle {
@@ -305,7 +348,6 @@ private struct RailEntry: View {
     let item: Place
     let current: Bool
     let open: Bool
-    let avatar: URL?
 
     /// An open entry's pill, icon and name together, as the web app's open rail draws it.
     private static let openWidth = Theme.px(232)
@@ -313,22 +355,8 @@ private struct RailEntry: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Group {
-                if item == .account {
-                    AsyncImage(url: avatar) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().aspectRatio(contentMode: .fill)
-                        } else {
-                            Image(systemName: "person.crop.circle.fill").resizable()
-                        }
-                    }
-                    .frame(width: Theme.px(24), height: Theme.px(24))
-                    .clipShape(Circle())
-                } else {
-                    Image(systemName: item.icon)
-                        .font(.system(size: Theme.px(20), weight: current ? .semibold : .regular))
-                }
-            }
+            Image(systemName: item.icon)
+                .font(.system(size: Theme.px(20), weight: current ? .semibold : .regular))
             .frame(width: Theme.px(24))
         }
         .padding(.horizontal, Theme.px(16))
@@ -371,7 +399,6 @@ struct ComingSoonView: View {
         VStack(alignment: .leading, spacing: Theme.px(12)) {
             Text(title).font(Theme.font(Theme.xl3, .bold))
             Text(text).font(Theme.font(Theme.base)).foregroundStyle(Theme.gray400)
-            Text("Coming in a later build.").font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray500)
         }
         .padding(Theme.px(40))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

@@ -6,13 +6,25 @@ import SwiftUI
 
 /// Channels played on this Apple TV, newest first, which the Recent group lists.
 enum RecentChannels {
-    private static let key = "live.recent"
     private static let limit = 30
 
-    static var ids: [String] { UserDefaults.standard.stringArray(forKey: key) ?? [] }
+    private static func key(client: JellyfinClient, userId: String) -> String {
+        let identity = Data((client.base.absoluteString + "|" + userId).utf8).base64EncodedString()
+        return "live.recent.v2." + identity
+    }
 
-    static func note(_ id: String) {
-        UserDefaults.standard.set(Array(([id] + ids.filter { $0 != id }).prefix(limit)), forKey: key)
+    static func ids(client: JellyfinClient, userId: String, defaults: UserDefaults = .standard) -> [String] {
+        defaults.stringArray(forKey: key(client: client, userId: userId)) ?? []
+    }
+
+    static func note(_ id: String, client: JellyfinClient, userId: String, defaults: UserDefaults = .standard) {
+        let existing = ids(client: client, userId: userId, defaults: defaults)
+        defaults.set(updated(id, existing: existing), forKey: key(client: client, userId: userId))
+    }
+
+    static func updated(_ id: String, existing: [String]) -> [String] {
+        var seen = Set<String>()
+        return Array(([id] + existing).filter { seen.insert($0).inserted }.prefix(limit))
     }
 }
 
@@ -25,6 +37,7 @@ struct LiveTVView: View {
     @State private var group = UserDefaults.standard.string(forKey: "live.group") ?? ChannelGroup.all
     @State private var guide = UserDefaults.standard.string(forKey: "live.view") == "guide"
     @State private var channels: [Item] = []
+    @State private var recentChannels: [Item] = []
     @State private var total = 0
     @State private var loaded = false
     @State private var loading = false
@@ -40,6 +53,9 @@ struct LiveTVView: View {
             LazyVStack(alignment: .leading, spacing: Theme.px(20)) {
                 PageTitle(text: "Live TV")
                 controls
+                if !recentChannels.isEmpty && group != ChannelGroup.recent {
+                    LiveRow(channels: recentChannels, airing: [:], play: play) { EmptyView() }
+                }
                 if !loaded {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, Theme.px(40))
                 } else if channels.isEmpty {
@@ -66,7 +82,7 @@ struct LiveTVView: View {
             .padding(.bottom, Theme.px(64))
         }
         .edgeToEdge()
-        .playFlow($choice)
+        .playFlow($choice) { Task { await loadGroups(); if group == ChannelGroup.recent { await reload() } } }
         .task { await loadGroups() }
         .task(id: group) { await reload() }
         .task {
@@ -121,9 +137,17 @@ struct LiveTVView: View {
         ])
         var list: [ChannelGroup] = []
         if (await favourites?.totalRecordCount ?? 0) > 0 { list.append(ChannelGroup(id: ChannelGroup.favourites, name: "Favourites")) }
-        if !RecentChannels.ids.isEmpty { list.append(ChannelGroup(id: ChannelGroup.recent, name: "Recent")) }
+        if !RecentChannels.ids(client: client, userId: userId).isEmpty { list.append(ChannelGroup(id: ChannelGroup.recent, name: "Recently Watched")) }
         list.append(ChannelGroup(id: ChannelGroup.all, name: "All channels"))
         list += (await genres?.items ?? []).map { ChannelGroup(id: $0.id, name: $0.name ?? "") }
+        let ids = RecentChannels.ids(client: client, userId: userId)
+        if ids.isEmpty {
+            recentChannels = []
+        } else {
+            let result: ItemsResult? = try? await client.get("/Items", ["userId": userId, "Ids": ids.joined(separator: ",")])
+            let byId = Dictionary((result?.items ?? []).map { ($0.id, $0) }) { first, _ in first }
+            recentChannels = ids.compactMap { byId[$0] }.filter(\.isChannel)
+        }
         groups = list
         // A group that's gone, such as Favourites emptied elsewhere, goes back to all channels.
         if !list.contains(where: { $0.id == group }) { choose(ChannelGroup.all) }
@@ -147,7 +171,7 @@ struct LiveTVView: View {
         let asked = group
         var found: [Item] = []
         if group == ChannelGroup.recent {
-            let ids = RecentChannels.ids
+            let ids = RecentChannels.ids(client: client, userId: userId)
             let result: ItemsResult? = ids.isEmpty ? nil : try? await client.get("/Items", ["userId": userId, "Ids": ids.joined(separator: ",")])
             let byId = Dictionary((result?.items ?? []).map { ($0.id, $0) }) { first, _ in first }
             found = ids.compactMap { byId[$0] }.filter(\.isChannel)
@@ -214,7 +238,6 @@ struct LiveTVView: View {
     }
 
     private func play(_ channel: Item) {
-        RecentChannels.note(channel.id)
         choice = VersionChoice(item: channel, startMs: nil, mode: .straight)
     }
 }
@@ -508,5 +531,106 @@ private struct GuideView: View {
             }
         }
         .frame(width: width, height: Self.rowHeight, alignment: .topLeading)
+    }
+}
+
+/// Channels as wide cards: the logo over a dark tile, the channel's name and what's on, with how far
+/// through it is. Selecting one plays it live.
+struct LiveRow<Action: View>: View {
+    let channels: [Item]
+    let airing: [String: Item]
+    let play: (Item) -> Void
+    @ViewBuilder let action: () -> Action
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.px(12)) {
+            HStack {
+                Text("Recently Watched").font(Theme.font(Theme.xl, .semibold))
+                Spacer()
+                action()
+            }
+            .pagePadding()
+            .focusSection()
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                    ForEach(channels) { channel in
+                        ChannelCard(channel: channel, airing: airing[channel.id]) { play(channel) }
+                    }
+                }
+                .pagePadding()
+                .padding(.vertical, Theme.px(8))
+            }
+            .edgeToEdge()
+        }
+        .focusSection()
+    }
+}
+
+private struct ChannelCard: View {
+    let channel: Item
+    let airing: Item?
+    let action: () -> Void
+
+    /// What's on: from the guide, else what the channel list sent along.
+    private var programme: (name: String, start: Date?, end: Date?)? {
+        if let airing { return (airing.name ?? "", airing.starts, airing.ends) }
+        if let current = channel.currentProgram { return (current.name ?? "", current.starts, current.ends) }
+        return nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.px(8)) {
+            Button(action: action) {
+                ZStack(alignment: .bottom) {
+                    ZStack {
+                        Theme.gray900
+                        ChannelLogo(channel: channel)
+                            .frame(width: Theme.px(160), height: Theme.px(90))
+                    }
+                    .frame(width: WideCard.size.width, height: WideCard.size.height)
+                    if let programme {
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                Rectangle().fill(.white.opacity(0.25))
+                                Rectangle().fill(Theme.brand500)
+                                    .frame(width: geometry.size.width * airedShare(from: programme.start, to: programme.end, now: Date()))
+                            }
+                        }
+                        .frame(height: Theme.px(4))
+                    }
+                }
+                .frame(width: WideCard.size.width, height: WideCard.size.height)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+            }
+            .buttonStyle(CardStyle())
+            VStack(alignment: .leading, spacing: Theme.px(2)) {
+                HStack(spacing: Theme.px(6)) {
+                    if let number = channel.channelNumber {
+                        Text(number).foregroundStyle(Theme.gray400).monospacedDigit()
+                    }
+                    Text(channel.name ?? "").lineLimit(1)
+                }
+                .font(Theme.font(15, .semibold))
+                Text(programme?.name ?? "Live")
+                    .font(Theme.font(13))
+                    .foregroundStyle(Theme.gray400)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, Theme.px(2))
+            .frame(width: WideCard.size.width, alignment: .leading)
+        }
+    }
+}
+
+
+/// Each player request owns a gate; failed loads and later resumes cannot add extra entries.
+struct ChannelHistoryGate {
+    private var recorded = false
+
+    mutating func shouldRecord(requested: Bool, playing: Bool, ready: Bool, stopped: Bool,
+                               channel: Bool, trailer: Bool) -> Bool {
+        guard requested, playing, ready, !stopped, channel, !trailer, !recorded else { return false }
+        recorded = true
+        return true
     }
 }

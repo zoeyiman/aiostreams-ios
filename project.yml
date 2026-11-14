@@ -125,3 +125,22 @@ targets:
         TARGETED_DEVICE_FAMILY: "3"
         ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"
         CODE_SIGN_STYLE: Automatic
+  AIOStreamsTVTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources:
+      - path: TV/Tests
+    dependencies:
+      - target: AIOStreamsTV
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.aiostreams-ios.tv.tests
+schemes:
+  AIOStreamsTV:
+    build:
+      targets:
+        AIOStreamsTV: all
+    test:
+      targets:
+        - AIOStreamsTVTests

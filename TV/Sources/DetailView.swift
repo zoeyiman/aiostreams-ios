@@ -171,12 +171,17 @@ struct DetailView: View {
                 Image(systemName: "checkmark")
             }
             .buttonStyle(CircleIconStyle(active: shown.userData?.played == true))
-            Button {
-                Task { await setFavourite(!(shown.userData?.isFavorite ?? false)) }
-            } label: {
-                Image(systemName: shown.userData?.isFavorite == true ? "heart.fill" : "heart")
+            if shown.isOnDemand {
+                Button {
+                    Task { await session.setSaved(shown, saved: !session.isSaved(shown)) }
+                } label: {
+                    Label(session.isSaved(shown) ? "Saved" : "Add to Watchlist",
+                          systemImage: session.isSaved(shown) ? "bookmark.fill" : "bookmark")
+                }
+                .buttonStyle(SecondaryPillStyle())
+                .disabled(session.saving.contains(shown.id))
+                .accessibilityHint("Watchlist and Favorites share the same saved titles")
             }
-            .buttonStyle(CircleIconStyle(active: shown.userData?.isFavorite == true))
         }
         .focusSection()
     }
@@ -325,12 +330,6 @@ struct DetailView: View {
     private func setPlayed(_ played: Bool) async {
         guard let client = session.client, let userId = session.userId else { return }
         try? await client.call(played ? "POST" : "DELETE", "/UserPlayedItems/\(shown.id)", ["userId": userId])
-        await load()
-    }
-
-    private func setFavourite(_ favourite: Bool) async {
-        guard let client = session.client, let userId = session.userId else { return }
-        try? await client.call(favourite ? "POST" : "DELETE", "/UserFavoriteItems/\(shown.id)", ["userId": userId])
         await load()
     }
 

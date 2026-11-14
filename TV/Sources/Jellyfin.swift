@@ -74,6 +74,8 @@ struct Item: Decodable, Identifiable, Hashable {
     var isSeries: Bool { type == "Series" }
     var isFolder: Bool { type == "CollectionFolder" || type == "BoxSet" || type == "Folder" }
     var isChannel: Bool { type == "TvChannel" }
+    /// Positive allowlist: live programmes and channels cannot leak into title collections.
+    var isOnDemand: Bool { ["Movie", "Series", "Episode"].contains(type ?? "") }
 
     /// An episode not started, which the web app's spoiler blur hides until it has focus.
     var unstarted: Bool { isEpisode && userData?.played != true && (userData?.playbackPositionTicks ?? 0) == 0 }

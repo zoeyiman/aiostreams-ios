@@ -6,6 +6,9 @@ import UIKit
 /// so every size here is the web app's CSS pixels × 1.5.
 enum Theme {
     static let scale: CGFloat = 1.5
+    static let cardRadius = px(12)
+    static let carouselGap = px(20)
+    static let sectionGap = px(40)
 
     /// CSS pixels to points.
     static func px(_ value: CGFloat) -> CGFloat { value * scale }
@@ -181,13 +184,18 @@ struct CircleIconStyle: ButtonStyle {
 
 /// A picture that takes focus: the ring goes round it, outside, so none of it is hidden.
 struct CardStyle: ButtonStyle {
-    var radius: CGFloat = Theme.px(8)
+    var radius: CGFloat = Theme.cardRadius
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         Focused { focused in
             configuration.label
                 .focusRing(focused, radius: radius)
+                .shadow(color: focused ? .black.opacity(0.65) : .clear, radius: Theme.px(12), y: Theme.px(8))
+                .scaleEffect(focused && !reduceMotion ? 1.035 : 1)
+                .zIndex(focused ? 1 : 0)
                 .opacity(configuration.isPressed ? 0.85 : 1)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: focused)
         }
     }
 }

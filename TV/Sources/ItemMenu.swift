@@ -46,7 +46,7 @@ struct ItemMenu: ViewModifier {
     private var playsStraight: Bool {
         prefs.autoPlayFirst || (item.resumeMs != nil && LastVersions.get(item.id) != nil)
     }
-    private var favourite: Bool { item.userData?.isFavorite == true }
+    private var favourite: Bool { session.isSaved(item) }
 
     func body(content: Content) -> some View {
         content.contextMenu {
@@ -119,13 +119,21 @@ struct ItemMenu: ViewModifier {
                     }
                 }
             }
-            if favourite || item.type == "Movie" || item.isSeries {
-                Button {
-                    act { client, userId in
-                        try await client.call(favourite ? "DELETE" : "POST", "/UserFavoriteItems/\(item.id)", ["userId": userId])
-                    }
-                } label: {
-                    Label(favourite ? "Remove favourite" : "Add favourite", systemImage: favourite ? "heart.slash" : "heart")
+            if item.isOnDemand {
+                if favourite {
+                    Button {
+                        Task { await session.setSaved(item, saved: false) }
+                    } label: { Label("Remove from saved titles", systemImage: "bookmark.slash") }
+                    .disabled(session.saving.contains(item.id))
+                } else {
+                    Button {
+                        Task { await session.setSaved(item, saved: true) }
+                    } label: { Label("Add to Watchlist", systemImage: "bookmark") }
+                    .disabled(session.saving.contains(item.id))
+                    Button {
+                        Task { await session.setSaved(item, saved: true) }
+                    } label: { Label("Add to Favorites", systemImage: "heart") }
+                    .disabled(session.saving.contains(item.id))
                 }
             }
         }

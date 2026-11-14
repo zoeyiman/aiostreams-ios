@@ -14,6 +14,30 @@ final class Preferences: ObservableObject {
     @Published private(set) var configuration: [String: Any] = [:]
     @Published private(set) var loaded = false
 
+    /// Sidebar visibility stays on this Apple TV, isolated by server and signed-in user.
+    @Published private(set) var sidebarVisibility: [String: Bool] = [:]
+    private var sidebarKey: String?
+
+    func loadSidebar(client: JellyfinClient, userId: String) {
+        let identity = Data((client.base.absoluteString + "|" + userId).utf8).base64EncodedString()
+        let key = "tv.sidebar.visibility." + identity
+        guard sidebarKey != key else { return }
+        sidebarKey = key
+        sidebarVisibility = UserDefaults.standard.dictionary(forKey: key) as? [String: Bool] ?? [:]
+    }
+
+    func setSidebarVisible(_ place: Place, visible: Bool) {
+        guard place.canHide, let sidebarKey else { return }
+        sidebarVisibility[place.rawValue] = visible
+        UserDefaults.standard.set(sidebarVisibility, forKey: sidebarKey)
+    }
+
+    func resetSidebar() {
+        guard let sidebarKey else { return }
+        sidebarVisibility = [:]
+        UserDefaults.standard.removeObject(forKey: sidebarKey)
+    }
+
     static let prefsId = "aiostreams-web"
     private static let savedMark = "saved"
 
@@ -22,6 +46,7 @@ final class Preferences: ObservableObject {
     private var pushTask: Task<Void, Never>?
 
     func load(client: JellyfinClient, userId: String) async {
+        loadSidebar(client: client, userId: userId)
         self.client = client
         self.userId = userId
         if let prefs = try? await client.json("GET", "/DisplayPreferences/\(Self.prefsId)", ["client": Self.prefsId, "userId": userId]),
@@ -398,11 +423,20 @@ struct SettingsView: View {
                         }
                     }
                 }
+                section("Sidebar", note: "Choose which pages appear. Home and Settings always stay visible. Saved on this Apple TV for this server and user.") {
+                    ForEach(Place.sidebar.filter(\.canHide)) { place in
+                        let visible = Place.visible(overrides: prefs.sidebarVisibility).contains(place)
+                        row(place.name, value: visible ? "On" : "Off") {
+                            prefs.setSidebarVisible(place, visible: !visible)
+                        }
+                    }
+                    row("Reset sidebar", value: "Default pages") { prefs.resetSidebar() }
+                }
                 section("Interface", note: nil) {
-                    row("Start page", value: Place(rawValue: prefs.startPage)?.name ?? "Home") {
+                    row("Start page", value: Place.visible(overrides: prefs.sidebarVisibility).first { $0.rawValue == prefs.startPage }?.name ?? "Home") {
                         chooser = Chooser(
                             title: "Start page",
-                            options: Place.startPages.map { ($0.name, $0.rawValue) },
+                            options: Place.startPages.filter { Place.visible(overrides: prefs.sidebarVisibility).contains($0) }.map { ($0.name, $0.rawValue) },
                             current: prefs.startPage
                         ) { prefs.startPage = $0 }
                     }

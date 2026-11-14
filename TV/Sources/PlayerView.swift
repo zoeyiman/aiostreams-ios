@@ -80,6 +80,18 @@ final class PlayerModel: ObservableObject {
     private var progressTimer: Timer?
     private var reported = false
     private var stopped = false
+    private var playbackRequested = false
+    private var enginePlaying = false
+    private var channelHistory = ChannelHistoryGate()
+
+    /// Count a channel only once this request is playing and its first frame is ready.
+    private func recordChannelIfStarted() {
+        guard let userId, channelHistory.shouldRecord(
+            requested: playbackRequested, playing: enginePlaying, ready: !waiting,
+            stopped: stopped, channel: request.item.isChannel, trailer: request.isTrailer
+        ) else { return }
+        RecentChannels.note(request.item.id, client: client, userId: userId)
+    }
 
     private let audioLanguages: [String]
     private let subtitleLanguages: [String]
@@ -113,8 +125,12 @@ final class PlayerModel: ObservableObject {
         engine.$state
             .sink { [weak self] state in
                 guard let self else { return }
+                self.enginePlaying = false
                 switch state {
-                case .playing: self.setPaused(false)
+                case .playing:
+                    self.enginePlaying = true
+                    self.setPaused(false)
+                    self.recordChannelIfStarted()
                 case .paused: self.setPaused(true)
                 case .ended: self.finished = true
                 case .error(let message):
@@ -125,7 +141,10 @@ final class PlayerModel: ObservableObject {
             }
             .store(in: &bag)
         Publishers.CombineLatest3(engine.$isBuffering, engine.$isSeeking, engine.$hasFirstFrameReadyForDisplay)
-            .sink { [weak self] buffering, seeking, ready in self?.waiting = buffering || seeking || !ready }
+            .sink { [weak self] buffering, seeking, ready in
+                self?.waiting = buffering || seeking || !ready
+                self?.recordChannelIfStarted()
+            }
             .store(in: &bag)
         engine.clock.$currentTime
             .throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)
@@ -197,7 +216,9 @@ final class PlayerModel: ObservableObject {
                 }
                 let start = self.isLive ? nil : self.request.startMs.map { $0 / 1000 }
                 try await self.engine.load(url: url, startPosition: start, options: loadOptions)
+                self.playbackRequested = true
                 self.engine.play()
+                self.recordChannelIfStarted()
                 self.report("/Sessions/Playing")
                 self.progressTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
                     MainActor.assumeIsolated { self?.report("/Sessions/Playing/Progress", event: "TimeUpdate") }

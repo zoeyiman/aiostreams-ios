@@ -5,6 +5,7 @@ enum Route: Hashable {
     case item(Item)
     case library(Item)
     case person(Person)
+    case playlist(Item)
 }
 
 extension View {
@@ -15,6 +16,7 @@ extension View {
                 case .item(let item): DetailView(item: item)
                 case .library(let view): LibraryView(view: view)
                 case .person(let person): PersonView(person: person)
+                case .playlist(let item): PlaylistItemsView(playlist: item)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -96,7 +98,7 @@ struct ItemRow: View {
                 .font(Theme.font(Theme.xl, .semibold))
                 .pagePadding()
             ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                LazyHStack(alignment: .top, spacing: Theme.carouselGap) {
                     ForEach(row.items) { item in
                         PosterLink(item: item, wide: row.wide)
                     }
@@ -106,7 +108,7 @@ struct ItemRow: View {
                     }
                 }
                 .pagePadding()
-                .padding(.vertical, Theme.px(8))
+                .padding(.vertical, Theme.px(12))
             }
             .edgeToEdge()
         }
@@ -223,6 +225,16 @@ struct PosterLink: View {
                             .padding(Theme.px(8))
                     }
                 }
+                .overlay(alignment: .topLeading) {
+                    if session.isSaved(item) {
+                        Image(systemName: "bookmark.fill")
+                            .font(.system(size: Theme.px(16), weight: .semibold))
+                            .padding(Theme.px(8))
+                            .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: Theme.px(8)))
+                            .padding(Theme.px(8))
+                            .accessibilityLabel("Saved")
+                    }
+                }
                 .overlay(alignment: .bottom) {
                     if let progress = item.userData?.playedPercentage, progress > 0, item.userData?.played != true {
                         GeometryReader { geometry in
@@ -235,7 +247,7 @@ struct PosterLink: View {
                     }
                 }
                 .frame(width: size.width, height: size.height)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
             }
             .buttonStyle(CardStyle())
             .focused($focused)
@@ -304,20 +316,15 @@ private struct RefreshOnReturn: ViewModifier {
     }
 }
 
-/// Posters in rows of six, which a page of items shows.
+/// Responsive poster grids for library and search pages.
 struct PosterGrid: View {
     @EnvironmentObject private var prefs: Preferences
     let items: [Item]
     var onLast: (() -> Void)? = nil
-    /// As many columns as fit, rather than six, for a page that may be narrower than the screen.
-    var fitting = false
-
+    /// Reflows with the sidebar and keyboard instead of overflowing a fixed six-column grid.
     private var columns: [GridItem] {
         let size = PosterLink.width(prefs.posterSize)
-        if fitting { return [GridItem(.adaptive(minimum: size, maximum: size), spacing: Theme.px(16))] }
-        // Six across at the usual size; as many as the page held at it otherwise.
-        let count = Int((Theme.px(168) * 6 + Theme.px(16) * 5 + Theme.px(16)) / (size + Theme.px(16)))
-        return Array(repeating: GridItem(.fixed(size), spacing: Theme.px(16)), count: max(count, 1))
+        return [GridItem(.adaptive(minimum: size, maximum: size), spacing: Theme.carouselGap)]
     }
 
     var body: some View {
@@ -423,21 +430,41 @@ struct LibraryView: View {
 struct FavouritesView: View {
     @EnvironmentObject private var session: Session
     @State private var items: [Item] = []
-    @State private var loaded = false
+    @State private var recommendations: [Item] = []
+    @State private var loading = true
+    @State private var error: String?
+    @State private var recommendationError: String?
+    @State private var generation = UUID()
 
     var body: some View {
         ScrollView {
-            PageTitle(text: "Favourites")
-            if loaded && items.isEmpty {
-                Text("Titles you favourite show here.")
-                    .font(Theme.font(Theme.base))
-                    .foregroundStyle(Theme.gray400)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .pagePadding()
-                    .padding(.vertical, pageMargin)
-                    .focusable()
+            LazyVStack(alignment: .leading, spacing: Theme.px(32)) {
+                PageTitle(text: "My Library")
+                if loading { ProgressView().pagePadding() }
+                if let error {
+                    Text(error).foregroundStyle(Theme.gray400).pagePadding()
+                    Button("Try again") { Task { await load() } }
+                        .buttonStyle(SecondaryPillStyle()).pagePadding()
+                } else if !loading && items.isEmpty {
+                    Text("Save movies and shows with Watchlist or Favorites. They all live here.")
+                        .font(Theme.font(Theme.lg)).foregroundStyle(Theme.gray400)
+                        .pagePadding().focusable()
+                }
+                if !items.isEmpty {
+                    ItemRow(row: HomeRow(id: "saved", title: "Saved titles", items: items))
+                }
+                if !recommendations.isEmpty {
+                    ItemRow(row: HomeRow(id: "recommended", title: "Recommended for you", items: recommendations))
+                } else if !loading && error == nil {
+                    Text(recommendationError ?? "Save or watch more titles to discover recommendations.")
+                        .foregroundStyle(Theme.gray400).pagePadding()
+                }
+                if recommendationError != nil {
+                    Button("Retry recommendations") { Task { await load() } }
+                        .buttonStyle(SecondaryPillStyle()).pagePadding()
+                }
             }
-            PosterGrid(items: items)
+            .padding(.bottom, Theme.px(64))
         }
         .edgeToEdge()
         .task { await load() }
@@ -445,18 +472,32 @@ struct FavouritesView: View {
         .reloadOnWatchChange { await load() }
     }
 
-    private func load() async {
+    @MainActor private func load() async {
         guard let client = session.client, let userId = session.userId else { return }
-        let result: ItemsResult? = try? await client.get("/Items", [
-            "userId": userId,
-            "Filters": "IsFavorite",
-            "Recursive": "true",
-            "IncludeItemTypes": "Movie,Series,Episode",
-            "SortBy": "DatePlayed,SortName",
-            "SortOrder": "Descending",
-        ])
-        items = result?.items ?? []
-        loaded = true
+        let request = UUID()
+        generation = request
+        loading = true
+        error = nil
+        recommendationError = nil
+        do {
+            let saved = try await TitleCollection.saved(client: client, userId: userId)
+            guard generation == request, !Task.isCancelled, session.userId == userId, session.client?.base == client.base else { return }
+            session.reconcileSaved(saved)
+            items = saved
+            recommendations = []
+            do {
+                let found = try await TitleCollection.recommendations(saved: saved, client: client, userId: userId)
+                guard generation == request, !Task.isCancelled, session.userId == userId, session.client?.base == client.base else { return }
+                recommendations = found
+            } catch {
+                guard generation == request else { return }
+                recommendationError = "Recommendations are unavailable. Your saved titles are still here."
+            }
+        } catch {
+            guard generation == request else { return }
+            self.error = error.localizedDescription
+        }
+        if generation == request { loading = false }
     }
 }
 
@@ -488,7 +529,7 @@ struct SearchView: View {
     private func grid(in edges: Edge.Set) -> some View {
         ScrollView {
             if prefs.combineSearch {
-                PosterGrid(items: results, fitting: true)
+                PosterGrid(items: results)
             } else {
                 // A section each, as the web app's search shows them unless they're combined.
                 let movies = results.filter { $0.type == "Movie" }
@@ -496,11 +537,11 @@ struct SearchView: View {
                 VStack(alignment: .leading, spacing: Theme.px(8)) {
                     if !movies.isEmpty {
                         Text("Movies").font(Theme.font(Theme.xl, .semibold)).pagePadding()
-                        PosterGrid(items: movies, fitting: true)
+                        PosterGrid(items: movies)
                     }
                     if !shows.isEmpty {
                         Text("Shows").font(Theme.font(Theme.xl, .semibold)).pagePadding()
-                        PosterGrid(items: shows, fitting: true)
+                        PosterGrid(items: shows)
                     }
                 }
             }
