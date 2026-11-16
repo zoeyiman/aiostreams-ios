@@ -5,7 +5,6 @@ import TVServices
 @main
 struct AIOStreamsTVApp: App {
     @StateObject private var session = Session()
-    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -19,9 +18,6 @@ struct AIOStreamsTVApp: App {
                 .environmentObject(session)
                 .task { await DemoMode.start(session) }
                 .onOpenURL { DeepLink.open($0) }
-                .onChange(of: scenePhase) { _, phase in
-                    if phase == .background { session.left() } else if phase == .active { session.returned() }
-                }
                 .onChange(of: session.profileID) { _, _ in
                     TVPictureInPicture.shared.stop()
                     TopShelfStore.save(.init(sections: []))

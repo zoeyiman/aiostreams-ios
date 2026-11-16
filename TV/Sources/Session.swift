@@ -38,16 +38,8 @@ final class Session: ObservableObject {
 
         var tokenKey: String { "profile.\(id.uuidString).token" }
     }
-    /// Who's watching is asked before the pages show (Ask when the app opens).
+    /// The signed-in viewer opened the profile picker.
     @Published private(set) var asking = false
-    private var leftAt: Date?
-
-    /// Ask when the app opens, and when it's come back to after half an hour, as the web app's
-    /// Who's watching setting does (kept on this Apple TV).
-    static var askWho: Bool {
-        get { UserDefaults.standard.bool(forKey: "account.askWho") }
-        set { UserDefaults.standard.set(newValue, forKey: "account.askWho") }
-    }
     private(set) var client: JellyfinClient?
     private(set) var userId: String?
 
@@ -62,7 +54,6 @@ final class Session: ObservableObject {
            let profile = profiles.first(where: { $0.id.uuidString == active }),
            let token = Keychain.read(profile.tokenKey) {
             activate(profile, token: token)
-            asking = Self.askWho
             return
         }
 
@@ -81,7 +72,6 @@ final class Session: ObservableObject {
                 defaults.set(legacy, forKey: RecentChannels.key(for: profile.id))
                 defaults.removeObject(forKey: "live.recent")
             }
-            asking = Self.askWho
         }
     }
 
@@ -215,15 +205,6 @@ final class Session: ObservableObject {
 
     func chooseProfile() {
         guard stage == .signedIn else { return }
-        asking = true
-    }
-
-    /// The app went to the background, or came back: after half an hour away, who's watching is asked.
-    func left() { leftAt = Date() }
-
-    func returned() {
-        defer { leftAt = nil }
-        guard stage == .signedIn, Self.askWho, let leftAt, Date().timeIntervalSince(leftAt) >= 1800 else { return }
         asking = true
     }
 

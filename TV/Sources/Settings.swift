@@ -192,6 +192,24 @@ final class Preferences: ObservableObject {
         )
     }
 
+    @Published private(set) var sidebarOrder: [Place] = {
+        let saved = UserDefaults.standard.stringArray(forKey: "interface.sidebarOrder") ?? []
+        var seen = Set<Place>()
+        return (saved.compactMap(Place.init(rawValue:)) + Place.sidebarDefault)
+            .filter { seen.insert($0).inserted }
+    }()
+
+    func moveSidebarTab(_ place: Place, by offset: Int) {
+        guard let index = sidebarOrder.firstIndex(of: place), sidebarOrder.indices.contains(index + offset) else { return }
+        sidebarOrder.swapAt(index, index + offset)
+        UserDefaults.standard.set(sidebarOrder.map(\.rawValue), forKey: "interface.sidebarOrder")
+    }
+
+    func resetSidebarOrder() {
+        sidebarOrder = Place.sidebarDefault
+        UserDefaults.standard.removeObject(forKey: "interface.sidebarOrder")
+    }
+
     @Published private(set) var hiddenSidebarTabs = Set(
         (UserDefaults.standard.stringArray(forKey: "interface.hiddenSidebarTabs") ?? []).compactMap(Place.init(rawValue:))
     )
@@ -324,9 +342,7 @@ final class Preferences: ObservableObject {
     }
 
     /// Where the app opens, as the web app's start page setting: kept on this Apple TV.
-    @Published var startPage: String = UserDefaults.standard.string(forKey: "app.startPage") ?? "home" {
-        didSet { UserDefaults.standard.set(startPage, forKey: "app.startPage") }
-    }
+
 
     /// `auto` follows the Apple TV; `12` or `24` as chosen. Synced, as the web app's `timeFormat`.
     var timeFormat: String { text("timeFormat", "auto") }
@@ -416,7 +432,6 @@ struct SettingsView: View {
     @State private var picker: MultiChooser?
     /// The server lets another device sign in with a code this account approves.
     @State private var quickConnect = false
-    @State private var askWho = Session.askWho
     /// Where sending a problem report got to.
     @State private var report: String?
     /// A newer release than this copy, which a sideloaded copy doesn't update to by itself.
@@ -649,13 +664,6 @@ struct SettingsView: View {
                     chooser = Chooser(title: L("Navigation"), options: [(L("Rail"), "rail"), (L("Top bar"), "top")],
                                       current: prefs.tvNavigation) { prefs.tvNavigation = $0 }
                 }
-                row(L("Start page"), value: Place(rawValue: prefs.startPage)?.name ?? Place.home.name) {
-                    chooser = Chooser(
-                        title: L("Start page"),
-                        options: Place.startPages.map { ($0.name, $0.rawValue) },
-                        current: prefs.startPage
-                    ) { prefs.startPage = $0 }
-                }
                 toggle(L("Merge continue watching and next up"), key: "mergeNextUp", fallback: false)
                 row(L("Card previews"), value: prefs.cardPreviews ? L("On") : L("Off")) { prefs.cardPreviews.toggle() }
                 if prefs.cardPreviews {
@@ -691,10 +699,14 @@ struct SettingsView: View {
                        options: [(L("Automatic"), "auto"), (L("12-hour"), "12"), (L("24-hour"), "24")])
             }
             section(L("Sidebar tabs"), note: nil) {
-                ForEach(Place.main.filter { $0 != .home }) { place in
-                    row(place.name, value: prefs.hiddenSidebarTabs.contains(place) ? L("Hidden") : L("Shown")) {
-                        prefs.toggleSidebarTab(place)
+                ForEach(prefs.sidebarOrder) { place in
+                    let hidden = prefs.hiddenSidebarTabs.contains(place)
+                    row(place.name, value: hidden ? L("Hidden") : L("Shown")) {
+                        editSidebarTab(place, hidden: hidden)
                     }
+                }
+                if prefs.sidebarOrder != Place.sidebarDefault {
+                    row(L("Reset sidebar order"), value: "") { prefs.resetSidebarOrder() }
                 }
             }
         case .theme:
@@ -715,11 +727,7 @@ struct SettingsView: View {
                 if quickConnect {
                     row(L("Approve a Quick Connect code"), value: "") { approving = true }
                 }
-                row(L("Ask when the app opens"), value: askWho ? L("On") : L("Off")) {
-                    askWho.toggle()
-                    Session.askWho = askWho
-                }
-                note(L("Also when you come back to it after half an hour. Whoever was watching carries on without their PIN."))
+
             }
             section(L("Profiles"), note: nil) {
                 ForEach(session.profiles) { profile in
@@ -919,22 +927,40 @@ struct SettingsView: View {
         }
     }
 
+    private func editSidebarTab(_ place: Place, hidden: Bool) {
+        guard let index = prefs.sidebarOrder.firstIndex(of: place) else { return }
+        var options: [(String, String)] = []
+        if index > 0 { options.append((L("Move up"), "up")) }
+        if index + 1 < prefs.sidebarOrder.count { options.append((L("Move down"), "down")) }
+        if Place.main.contains(place), place != .home {
+            options.append((hidden ? L("Show") : L("Hide"), "visibility"))
+        }
+        chooser = Chooser(title: place.name, options: options, current: "") { action in
+            switch action {
+            case "up": prefs.moveSidebarTab(place, by: -1)
+            case "down": prefs.moveSidebarTab(place, by: 1)
+            case "visibility": prefs.toggleSidebarTab(place)
+            default: break
+            }
+        }
+    }
+
     // MARK: Featured on home
 
-    /// The libraries the hero can draw from, with Continue watching and Next up.
+    /// The visible movie and show catalogs the hero can draw from.
     @State private var featuredOptions: [(label: String, value: String)] = []
 
     private var featuredLabel: String {
         guard let featured = prefs.featured else { return L("Automatic") }
         if featured.isEmpty { return L("None") }
-        return featured.map { source in featuredOptions.first { $0.value == source }?.label ?? source }
-            .joined(separator: ", ")
+        let names = featured.compactMap { source in featuredOptions.first { $0.value == source }?.label }
+        return names.isEmpty ? L("Automatic") : names.joined(separator: ", ")
     }
 
     private func chooseFeatured() {
         picker = MultiChooser(
             title: L("Featured on home"),
-            note: L("Up to %@, mixed together. Left empty, your first movie and show libraries are featured.", "4"),
+            note: L("Up to %@ catalogs, mixed together. Leave empty to feature trending and latest titles automatically.", "4"),
             options: featuredOptions,
             chosen: prefs.featured ?? [],
             limit: 4
@@ -944,8 +970,10 @@ struct SettingsView: View {
     private func loadFeaturedOptions() async {
         guard let client = session.client, let userId = session.userId else { return }
         let views: ItemsResult? = try? await client.get("/UserViews", ["userId": userId])
-        featuredOptions = [(L("Continue watching"), "resume"), (L("Next up"), "next-up")]
-            + (views?.items ?? []).filter(isBrowsable).map { ($0.name ?? L("Library"), "view:\($0.id)") }
+        featuredOptions = (views?.items ?? []).filter { view in
+            guard let kind = homeCatalogKind(view) else { return false }
+            return kind != .streaming
+        }.map { ($0.name ?? L("Library"), "view:\($0.id)") }
     }
 
     /// Help under the row before it, in the same card, with no line between.

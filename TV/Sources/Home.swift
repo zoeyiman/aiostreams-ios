@@ -2,7 +2,7 @@ import SwiftUI
 import TVServices
 
 // The web app's home (pages/home.tsx, components/hero.tsx) as a TV shows it by default:
-// a rotating hero over the first rows, then Continue watching, Next up and each library.
+// a rotating hero over the server catalogs featured on Home.
 
 /// The web app's hero picks: the heads of the Movies and Shows libraries, interleaved.
 private let heroPerLibrary = 8
@@ -34,30 +34,38 @@ func mergeRows(_ resume: [Item], _ nextUp: [Item]) -> [Item] {
         .map(\.element)
 }
 
+enum HomeCatalogKind: Int {
+    case streaming, trending, latest
+}
+
+/// Jellyfin exposes installed catalogs as user views. AIOMetadata supplies their names and types.
+func homeCatalogKind(_ view: Item) -> HomeCatalogKind? {
+    guard isBrowsable(view) else { return nil }
+    let name = view.name?.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil) ?? ""
+    let words = name.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+    let normalized = words.joined(separator: " ")
+    if normalized.contains("streaming services") { return .streaming }
+    guard view.collectionType != "boxsets" else { return nil }
+    if words.contains("trending") { return .trending }
+    if words.contains("latest") || ["new releases", "newly released", "recent releases", "recently added",
+                                   "new movies", "new shows", "new tv shows", "new series", "now playing"]
+        .contains(where: { normalized.contains($0) }) {
+        return .latest
+    }
+    return nil
+}
+
 struct HomeView: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
     @State private var hero: [Item] = []
-    @State private var resume: [Item] = []
-    @State private var nextUp: [Item] = []
-    /// Episodes of shows you follow airing soon (Jellyfin's Shows/Upcoming), as the web app's row.
-    @State private var upcoming: [Item] = []
-    @Environment(\.openRoute) private var openRoute
-    @Environment(\.openPlace) private var openPlace
-    /// Favourite channels with what's on now.
-    @State private var channels: [Item] = []
-    @State private var airing: [String: Item] = [:]
-    @State private var libraries: [HomeRow] = []
-    @State private var collectionRows: [HomeRow] = []
+    @State private var catalogs: [HomeRow] = []
     @State private var loaded = false
     @State private var loading = false
     @State private var error: String?
     @State private var choice: VersionChoice?
-
-    /// The focused card's title, which a following hero shows.
     @State private var followed: Item?
 
-    /// Hero: rotates through featured titles, or follows the focused card, pinned over the rows.
     private var following: Bool { prefs.heroMode != "rotate" }
 
     var body: some View {
@@ -68,105 +76,47 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HeroCarousel(items: hero, play: play, followed: followed ?? hero.first,
                                  height: prefs.heroMode == "corner" ? Theme.px(360) : Theme.px(456))
-                    ScrollView { rows }
-                        .edgeToEdge()
+                    ScrollView { rows }.edgeToEdge()
                 }
             } else {
-                ScrollView { rows }
-                    .edgeToEdge()
+                ScrollView { rows }.edgeToEdge()
             }
         }
-        .environment(\.cardFocused, { item in if following { followed = item } })
+        .environment(\.cardFocused, { item in
+            if following && (item.type == "Movie" || item.isSeries) { followed = item }
+        })
         .task(id: prefs.loaded) { if prefs.loaded && !loaded { await load() } }
-        .onChange(of: prefs.featured) { _, _ in Task { await load() } }
+        .onChange(of: prefs.featured) { _, _ in updateHero() }
         .refreshOnReturn { await load() }
         .reloadOnWatchChange { await load() }
         .playFlow($choice) { Task { await load() } }
     }
 
     private var rows: some View {
-            LazyVStack(alignment: .leading, spacing: Theme.px(40)) {
-                if !hero.isEmpty && !following {
-                    HeroCarousel(items: hero, play: play)
-                        // Rows sit just under it.
-                        .padding(.bottom, -Theme.px(32))
-                } else {
-                    Color.clear.frame(height: Theme.px(16))
-                }
-                // With "Merge continue watching and next up" on, one row holds both, as the web app's.
-                let merging = prefs.flag("mergeNextUp", false)
-                let continuing = merging ? mergeRows(resume, nextUp) : resume
-                if !continuing.isEmpty {
-                    // Activity is in the rail, so the row needs no button of its own.
-                    WideRow(title: L("Continue watching"), items: continuing, play: play) { EmptyView() }
-                }
-                if !merging && !nextUp.isEmpty {
-                    WideRow(title: L("Next up"), items: nextUp, play: play) { EmptyView() }
-                }
-                if !channels.isEmpty {
-                    LiveRow(channels: channels, airing: airing, play: playChannel) {
-                        Button { openPlace(.live) } label: {
-                            Label(L("All channels"), systemImage: "play.tv")
-                        }
-                        .buttonStyle(SoftPillStyle())
-                    }
-                }
-                if !upcoming.isEmpty {
-                    // Nothing to play yet, so a card opens its show.
-                    WideRow(title: L("Upcoming"), items: upcoming, upcoming: true, play: openShow) { EmptyView() }
-                }
-                ForEach(collectionRows) { row in
-                    ItemRow(row: row)
-                }
-                ForEach(libraries) { row in
-                    ItemRow(row: row)
-                }
-                if loading && hero.isEmpty && libraries.isEmpty {
-                    ProgressView().frame(maxWidth: .infinity).padding(.top, Theme.px(200))
-                }
-                if !loading && hero.isEmpty && resume.isEmpty && nextUp.isEmpty && upcoming.isEmpty
-                    && channels.isEmpty && collectionRows.isEmpty && libraries.isEmpty {
-                    VStack(spacing: Theme.px(16)) {
-                        Text(error ?? L("Nothing here yet. Add catalogs to your configuration."))
-                            .font(Theme.font(Theme.base))
-                            .foregroundStyle(Theme.gray400)
-                        Button(L("Try again")) { Task { await load() } }
-                            .buttonStyle(SoftPillStyle())
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, Theme.px(200))
-                }
+        LazyVStack(alignment: .leading, spacing: Theme.px(40)) {
+            if !hero.isEmpty && !following {
+                HeroCarousel(items: hero, play: play).padding(.bottom, -Theme.px(32))
+            } else {
+                Color.clear.frame(height: Theme.px(16))
             }
-            .padding(.bottom, Theme.px(64))
-    }
-
-    /// Home only shows favourite channels. Viewing history belongs to Live TV.
-    private func loadChannels(client: JellyfinClient, userId: String) async {
-        let limit = 20
-        let favourites: ItemsResult? = try? await client.get("/LiveTv/Channels", [
-            "userId": userId, "IsFavorite": "true", "Limit": String(limit), "AddCurrentProgram": "true",
-        ])
-        guard !Task.isCancelled, let favourites else { return }
-        channels = favourites.items ?? []
-        guard !channels.isEmpty else { return }
-        let now: ItemsResult? = try? await client.post("/LiveTv/Programs", body: [
-            "UserId": userId, "ChannelIds": channels.map(\.id), "IsAiring": true, "Fields": ["Overview"],
-        ])
-        guard !Task.isCancelled else { return }
-        airing = Dictionary((now?.items ?? []).compactMap { programme in programme.channelId.map { ($0, programme) } }) { first, _ in first }
-    }
-
-    private func playChannel(_ channel: Item) {
-        choice = VersionChoice(item: channel, startMs: nil, mode: .straight)
-    }
-
-    /// An upcoming episode's show, or the title itself.
-    private func openShow(_ item: Item) {
-        if let series = item.seriesId {
-            openRoute(.item(Item(id: series, name: item.seriesName, type: "Series")))
-        } else {
-            openRoute(.item(item))
+            ForEach(catalogs) { row in
+                ItemRow(row: row)
+            }
+            if catalogs.isEmpty {
+                VStack(spacing: Theme.px(16)) {
+                    if loading {
+                        ProgressView()
+                    } else {
+                        Text(error ?? L("No Streaming Services, Trending or Latest catalogs are available on this server."))
+                            .foregroundStyle(Theme.gray400)
+                        Button(L("Try again")) { Task { await load() } }.buttonStyle(SoftPillStyle())
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, Theme.px(200))
+            }
         }
+        .padding(.bottom, Theme.px(64))
     }
 
     private func play(_ item: Item) {
@@ -183,80 +133,81 @@ struct HomeView: View {
             if !Task.isCancelled { loaded = true }
         }
         do {
-            async let resumeResult: ItemsResult = client.get("/UserItems/Resume", ["userId": userId, "Limit": "24", "MediaTypes": "Video"])
-            async let nextResult: ItemsResult = client.get("/Shows/NextUp", ["userId": userId, "Limit": "24", "EnableResumable": "false"])
-            async let upcomingResult: ItemsResult = client.get("/Shows/Upcoming", ["userId": userId, "Limit": "24"])
-            async let viewsResult: ItemsResult = client.get("/UserViews", ["userId": userId])
-            // Assigning only on change keeps SwiftUI's views (and the focused card) in place on a refresh.
-            let newResume = try? await resumeResult.items
-            let newNextUp = try? await nextResult.items
-            let newUpcoming = try? await upcomingResult.items
-            let allViews = try await viewsResult.items ?? []
-            let views = allViews.filter(isBrowsable)
-            let hasLiveTV = allViews.contains { $0.collectionType == "livetv" }
-            let needsRootCollections = session.isStock && !views.contains { $0.collectionType == "boxsets" }
-            async let rootBoxSets: ItemsResult? = needsRootCollections ? try? client.get("/Items", [
-                "userId": userId, "IncludeItemTypes": "BoxSet", "Recursive": "true",
-                "Limit": "24", "SortBy": "SortName",
-            ]) : nil
+            // Top Shelf on the Apple TV system home screen continues to offer playback shortcuts.
+            async let resume: ItemsResult? = try? client.get("/UserItems/Resume", ["userId": userId, "Limit": "24", "MediaTypes": "Video"])
+            async let nextUp: ItemsResult? = try? client.get("/Shows/NextUp", ["userId": userId, "Limit": "24", "EnableResumable": "false"])
+            let result: ItemsResult = try await client.get("/UserViews", ["userId": userId])
+            var views = (result.items ?? []).compactMap { view in homeCatalogKind(view).map { (view, $0) } }
+            let stock = session.isStock
 
-            // Each library's head, in the configuration's order, as each arrives.
-            var heads: [Int: (Item, [Item])] = [:]
-            let previousRows = libraries
-            let previousCollections = collectionRows
-            await withTaskGroup(of: (Int, Item, [Item]?).self) { group in
-                for (index, view) in views.enumerated() {
+            if stock && !views.contains(where: { $0.1 == .streaming }) {
+                let boxSets: ItemsResult? = try? await client.get("/Items", [
+                    "userId": userId, "IncludeItemTypes": "BoxSet", "Recursive": "true",
+                    "SearchTerm": "Streaming Services", "Limit": "24",
+                ])
+                if let view = boxSets?.items?.first(where: { homeCatalogKind($0) == .streaming }) {
+                    views.append((view, .streaming))
+                }
+            }
+            let ordered = views.enumerated().sorted {
+                $0.element.1 == $1.element.1 ? $0.offset < $1.offset : $0.element.1.rawValue < $1.element.1.rawValue
+            }.map(\.element)
+            let previous = catalogs
+            let rows = await withTaskGroup(of: (Int, HomeRow?).self) { group in
+                for (index, entry) in ordered.enumerated() {
+                    let (view, kind) = entry
                     group.addTask {
+                        let streaming = kind == .streaming
                         let genre = await openingGenre(client, userId: userId, view: view)
-                        let result: ItemsResult? = try? await client.get("/Items", [
-                            "userId": userId,
-                            "ParentId": view.id,
-                            "IncludeItemTypes": libraryTypes(view),
-                            "GenreIds": genre,
-                            "Recursive": view.collectionType == "boxsets" ? "false" : "true",
-                            "Limit": "24",
-                            "Fields": "Overview,Genres",
+                        let page: ItemsResult? = try? await client.get("/Items", [
+                            "userId": userId, "ParentId": view.id,
+                            "IncludeItemTypes": streaming ? "BoxSet" : libraryTypes(view),
+                            "GenreIds": genre, "Recursive": streaming ? "false" : "true",
+                            "Limit": "24", "Fields": "Overview,Genres",
                         ])
-                        return (index, view, result.map { $0.items ?? [] })
+                        guard let page else { return (index, previous.first { $0.id == view.id }) }
+                        let titles = (page.items ?? []).filter { item in
+                            streaming ? item.type == "BoxSet" : item.type == "Movie" || item.isSeries
+                        }
+                        guard !titles.isEmpty else { return (index, nil) }
+                        return (index, HomeRow(id: view.id, title: view.name ?? L("Library"), items: titles,
+                                               library: view, wide: streaming, collection: streaming))
                     }
                 }
-                for await (index, view, items) in group {
-                    let previous = (previousRows.first { $0.id == view.id }?.items ?? [])
-                        + (previousCollections.first { $0.id == "collections.\(view.id)" }?.items ?? [])
-                    heads[index] = (view, items ?? previous)
+                if stock {
+                    for (index, type) in ["Movie", "Series"].enumerated() {
+                        guard !ordered.contains(where: { $0.1 == .latest && libraryTypes($0.0).split(separator: ",").contains(Substring(type)) }) else { continue }
+                        group.addTask {
+                            let id = "latest.\(type)"
+                            let offset = ordered.count + index
+                            let page: ItemsResult? = try? await client.get("/Items", [
+                                "userId": userId, "IncludeItemTypes": type, "Recursive": "true",
+                                "SortBy": "DateCreated", "SortOrder": "Descending",
+                                "Limit": "24", "Fields": "Overview,Genres",
+                            ])
+                            guard let page else { return (offset, previous.first { $0.id == id }) }
+                            let titles = (page.items ?? []).filter { $0.type == type }
+                            guard !titles.isEmpty else { return (offset, nil) }
+                            return (offset, HomeRow(id: id, title: type == "Movie" ? L("Latest movies") : L("Latest shows"), items: titles))
+                        }
+                    }
                 }
+                var result: [Int: HomeRow] = [:]
+                for await (index, row) in group { result[index] = row }
+                return result.keys.sorted().compactMap { result[$0] }
             }
-            let nativeBoxSets = await rootBoxSets?.items ?? []
             guard !Task.isCancelled, profile == session.profileID else { return }
-            if let newResume, newResume != resume { resume = newResume }
-            if let newNextUp, newNextUp != nextUp { nextUp = newNextUp }
-            if let newUpcoming, newUpcoming != upcoming { upcoming = newUpcoming }
-            saveTopShelf(client: client)
-
-            var collections = heads.keys.sorted().compactMap { key -> HomeRow? in
-                guard let (view, items) = heads[key] else { return nil }
-                let covers = items.filter { $0.type == "BoxSet" }
-                guard !covers.isEmpty else { return nil }
-                return HomeRow(id: "collections.\(view.id)", title: view.name ?? L("Collections"), items: covers,
-                               library: view.collectionType == "boxsets" ? view : nil, wide: true, collection: true)
+            if catalogs.count != rows.count || !zip(catalogs, rows).allSatisfy({ old, new in
+                old.id == new.id && old.title == new.title && old.items == new.items
+            }) {
+                catalogs = rows
             }
-            if !nativeBoxSets.isEmpty {
-                collections.append(HomeRow(id: "home.boxsets", title: L("Collections"), items: nativeBoxSets,
-                                           wide: true, collection: true))
-            }
-            if !sameRows(collections, collectionRows) { collectionRows = collections }
-            let rows = homeRows(heads)
-            if !sameRows(rows, libraries) { libraries = rows }
-            let picks = heroPicks(views: views, heads: heads, client: client)
-            if picks != hero {
-                hero = picks
-            }
+            updateHero()
             loaded = true
-            if hasLiveTV {
-                await loadChannels(client: client, userId: userId)
-            } else {
-                channels = []
-                airing = [:]
+
+            let (resuming, next) = await (resume, nextUp)
+            if !Task.isCancelled, profile == session.profileID, resuming != nil || next != nil {
+                saveTopShelf(client: client, resume: resuming?.items ?? [], nextUp: next?.items ?? [])
             }
         } catch let failure as JellyfinError where failure.status == 401 {
             if !Task.isCancelled { session.expired(client) }
@@ -265,8 +216,17 @@ struct HomeView: View {
         }
     }
 
-    /// Continue watching and Next up, for the Apple TV's home screen (Top Shelf).
-    private func saveTopShelf(client: JellyfinClient) {
+    private func updateHero() {
+        guard let client = session.client else { return }
+        let picks = heroPicks(client: client)
+        if hero != picks { hero = picks }
+        if let followed, !catalogs.contains(where: { $0.items.contains(where: { $0.id == followed.id }) }) {
+            self.followed = nil
+        }
+    }
+
+    /// Continue watching and Next up for Top Shelf on the system home screen.
+    private func saveTopShelf(client: JellyfinClient, resume: [Item], nextUp: [Item]) {
         func entries(_ items: [Item]) -> [TopShelfStore.Entry] {
             items.prefix(12).map { item in
                 let title = item.isEpisode
@@ -284,45 +244,12 @@ struct HomeView: View {
         TVTopShelfContentProvider.topShelfContentDidChange()
     }
 
-    /// What the web app's Featured on home names (`resume`, `next-up`, `view:<id>`), taking turns;
-    /// on Automatic, the Movies and Shows libraries' heads, or the first library's. Only titles with
-    /// a backdrop.
-    private func homeRows(_ heads: [Int: (Item, [Item])]) -> [HomeRow] {
-        heads.keys.sorted().compactMap { key in
-            guard let entry = heads[key] else { return nil }
-            let titles = entry.1.filter { $0.type != "BoxSet" }
-            guard !titles.isEmpty else { return nil }
-            return HomeRow(id: entry.0.id, title: entry.0.name ?? L("Library"), items: titles, library: entry.0)
-        }
-    }
-
-    /// Same rows, titles and titles in the same order, each as it was, its progress and watched
-    /// mark included: nothing the screen would show differently.
-    private func sameRows(_ a: [HomeRow], _ b: [HomeRow]) -> Bool {
-        a.count == b.count && zip(a, b).allSatisfy { x, y in
-            x.id == y.id && x.title == y.title && x.items == y.items
-        }
-    }
-
-    private func heroPicks(views: [Item], heads: [Int: (Item, [Item])], client: JellyfinClient) -> [Item] {
-        let lists = heads.keys.sorted().compactMap { heads[$0] }
-        var sources: [[Item]]
-        // A removed library is skipped, and a list left without any is automatic, as the web app has it.
-        let chosen = prefs.featured?.filter { source in
-            !source.hasPrefix("view:") || views.contains { "view:\($0.id)" == source }
-        }
-        if let chosen, !(chosen.isEmpty && !(prefs.featured ?? []).isEmpty) {
-            sources = chosen.map { source in
-                switch source {
-                case "resume": return prefs.flag("mergeNextUp", false) ? mergeRows(resume, nextUp) : resume
-                case "next-up": return nextUp
-                default: return lists.first { "view:\($0.0.id)" == source }?.1 ?? []
-                }
-            }
-        } else {
-            sources = ["movies", "tvshows"].compactMap { kind in lists.first { $0.0.collectionType == kind }?.1 }
-            if sources.isEmpty, let first = lists.first?.1 { sources = [first] }
-        }
+    private func heroPicks(client: JellyfinClient) -> [Item] {
+        let rows = catalogs.filter { !$0.collection }
+        let chosen = prefs.featured
+        if chosen?.isEmpty == true { return [] }
+        let selected = (chosen ?? []).compactMap { key in rows.first { "view:\($0.id)" == key } }
+        let sources = (selected.isEmpty ? rows : selected).map(\.items)
         let candidates = sources.map { Array($0.prefix(heroPerLibrary)) }
         var picks: [Item] = []
         var seen = Set<String>()
@@ -714,38 +641,6 @@ func untilLabel(_ date: Date) -> String {
     case 1: return L("tomorrow")
     case ..<14: return L("in %ld days", days)
     default: return L("in %ld weeks", Int((Double(days) / 7).rounded()))
-    }
-}
-
-/// Channels as wide cards: the logo over a dark tile, the channel's name and what's on, with how far
-/// through it is. Selecting one plays it live.
-struct LiveRow<Action: View>: View {
-    let channels: [Item]
-    let airing: [String: Item]
-    let play: (Item) -> Void
-    @ViewBuilder let action: () -> Action
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.px(12)) {
-            HStack {
-                Text(L("Live TV")).font(Theme.font(Theme.xl, .semibold))
-                Spacer()
-                action()
-            }
-            .pagePadding()
-            .focusSection()
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                    ForEach(channels) { channel in
-                        ChannelCard(channel: channel, airing: airing[channel.id]) { play(channel) }
-                    }
-                }
-                .pagePadding()
-                .padding(.vertical, Theme.px(8))
-            }
-            .edgeToEdge()
-        }
-        .focusSection()
     }
 }
 

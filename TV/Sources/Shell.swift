@@ -8,8 +8,7 @@ enum Place: String, CaseIterable, Identifiable {
 
     static let main: [Place] = [.home, .discover, .live, .search, .favourites, .playlists, .together, .calendar, .activity]
 
-    /// What the start page setting offers, as the web app's (lib/start-page.ts).
-    static let startPages: [Place] = [.home, .discover, .live, .favourites, .calendar, .activity]
+    static let sidebarDefault: [Place] = [.account] + main + [.settings]
 
     var name: String {
         switch self {
@@ -50,8 +49,7 @@ enum Place: String, CaseIterable, Identifiable {
 struct MainView: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
-    /// Opens on the start page; Live TV falls back to Home on a server without it.
-    @State private var place: Place = Place(rawValue: UserDefaults.standard.string(forKey: "app.startPage") ?? "") ?? .home
+    @State private var place: Place = .home
     /// The server's Live TV library, which only a server with channels lists.
     @State private var liveView: Item?
     @State private var paths: [Place: NavigationPath] = [:]
@@ -389,15 +387,17 @@ struct MainView: View {
                 .frame(width: Theme.px(24), height: Theme.px(32))
                 .padding(.horizontal, Theme.px(14))
                 .padding(.bottom, Theme.px(24))
-            entry(.account)
-            Rectangle().fill(.white.opacity(0.1)).frame(height: Theme.px(1))
-                .padding(.horizontal, Theme.px(12))
-                .padding(.vertical, Theme.px(4))
-            ForEach(Place.main.filter { !prefs.hiddenSidebarTabs.contains($0) && ($0 != .live || liveView != nil) }) {
-                entry($0)
+            ForEach(prefs.sidebarOrder.filter { !prefs.hiddenSidebarTabs.contains($0) && ($0 != .live || liveView != nil) }) { item in
+                if item == .settings && prefs.sidebarOrder.last == .settings {
+                    Spacer(minLength: 0)
+                }
+                entry(item)
+                if item == .account && prefs.sidebarOrder.first == .account {
+                    Rectangle().fill(.white.opacity(0.1)).frame(height: Theme.px(1))
+                        .padding(.horizontal, Theme.px(12))
+                        .padding(.vertical, Theme.px(4))
+                }
             }
-            Spacer(minLength: 0)
-            entry(.settings)
         }
         .padding(.horizontal, Theme.px(12))
         .padding(.vertical, Theme.px(32))
