@@ -387,13 +387,129 @@ struct PosterGrid: View {
 
 // MARK: - Discover
 
+struct DiscoverView: View {
+    @EnvironmentObject private var session: Session
+    @State private var movies: [Item] = []
+    @State private var shows: [Item] = []
+    @State private var loading = false
+    @State private var loaded = false
+    @State private var message: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.px(28)) {
+                HStack(alignment: .bottom) {
+                    Text(L("Discover")).font(Theme.font(Theme.xl3, .bold))
+                    Spacer()
+                    NavigationLink {
+                        LibrariesView()
+                    } label: {
+                        Label(L("Browse libraries"), systemImage: "rectangle.grid.2x2")
+                    }
+                    .buttonStyle(SoftPillStyle())
+                }
+                .pagePadding()
+                .padding(.top, Theme.px(40))
+
+                if !movies.isEmpty {
+                    ItemRow(row: HomeRow(id: "discover.movies", title: L("Movies for you"), items: movies))
+                }
+                if !shows.isEmpty {
+                    ItemRow(row: HomeRow(id: "discover.shows", title: L("Shows for you"), items: shows))
+                }
+                if !loaded {
+                    ProgressView().frame(maxWidth: .infinity)
+                } else if let message {
+                    Text(message).foregroundStyle(Theme.gray400).pagePadding()
+                }
+            }
+            .padding(.bottom, Theme.px(44))
+        }
+        .edgeToEdge()
+        .task { await load() }
+        .refreshOnReturn { await load() }
+        .reloadOnWatchChange { await load() }
+    }
+
+    private func load() async {
+        guard !loading, let client = session.client, let userId = session.userId else { return }
+        loading = true
+        defer { loading = false }
+
+        async let favourites: ItemsResult? = try? client.get("/Items", [
+            "userId": userId, "Recursive": "true", "IncludeItemTypes": "Movie,Series,Episode",
+            "Filters": "IsFavorite", "Limit": "24",
+        ])
+        async let watched: ItemsResult? = try? client.get("/Items", [
+            "userId": userId, "Recursive": "true", "IncludeItemTypes": "Movie,Series,Episode",
+            "Filters": "IsPlayed", "SortBy": "DatePlayed", "SortOrder": "Descending", "Limit": "48",
+        ])
+        let (favouriteResult, watchedResult) = await (favourites, watched)
+        guard !Task.isCancelled else { return }
+        let favouriteItems = favouriteResult?.items ?? []
+        let watchedItems = watchedResult?.items ?? []
+        let favouriteIDs = seedIDs(favouriteItems)
+        let watchedIDs = seedIDs(watchedItems)
+        var seen = Set<String>()
+        let seeds = zip(favouriteIDs.prefix(6), watchedIDs.prefix(6)).flatMap { [$0.0, $0.1] }
+            + Array(favouriteIDs.prefix(6)) + Array(watchedIDs.prefix(6))
+        let unique = seeds.filter { seen.insert($0).inserted }
+        let suggestions = await withTaskGroup(of: (Int, ItemsResult?).self) { group in
+            for (index, id) in unique.enumerated() {
+                group.addTask {
+                    let result: ItemsResult? = try? await client.get("/Items/\(id)/Similar", [
+                        "userId": userId, "Limit": "16", "EnableUserData": "true",
+                    ])
+                    return (index, result)
+                }
+            }
+            var ordered: [Int: [Item]] = [:]
+            for await (index, result) in group {
+                if let result { ordered[index] = result.items ?? [] }
+            }
+            return ordered.keys.sorted().compactMap { ordered[$0] }
+        }
+        guard !Task.isCancelled else { return }
+        seen.formUnion(favouriteIDs + watchedIDs)
+        var picks: [Item] = []
+        // Interleave results so any one favourite or watched title doesn't dominate the rows.
+        for index in 0..<(suggestions.map(\.count).max() ?? 0) {
+            for list in suggestions where index < list.count {
+                let item = list[index]
+                guard item.type == "Movie" || item.isSeries, item.userData?.played != true,
+                      item.userData?.isFavorite != true, item.resumeMs == nil, seen.insert(item.id).inserted else { continue }
+                picks.append(item)
+            }
+        }
+        movies = Array(picks.filter { $0.type == "Movie" }.prefix(24))
+        shows = Array(picks.filter(\.isSeries).prefix(24))
+        loaded = true
+        if movies.isEmpty && shows.isEmpty {
+            if (favouriteResult == nil && watchedResult == nil) || (!unique.isEmpty && suggestions.isEmpty) {
+                message = L("Recommendations could not be loaded from this server.")
+            } else if unique.isEmpty {
+                message = L("Favourite or watch a movie or show to get recommendations here.")
+            } else {
+                message = L("No new recommendations yet.")
+            }
+        } else {
+            message = nil
+        }
+    }
+
+    private func seedIDs(_ items: [Item]) -> [String] {
+        var seen = Set<String>()
+        return items.compactMap { $0.isEpisode ? $0.seriesId : $0.id }.filter { seen.insert($0).inserted }
+    }
+}
+
 struct LibrariesView: View {
     @EnvironmentObject private var session: Session
     @State private var views: [Item] = []
 
     var body: some View {
         ScrollView {
-            PageTitle(text: L("Discover"))
+            PageTitle(text: L("Libraries"))
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Theme.px(16)), count: 4), spacing: Theme.px(16)) {
                 ForEach(views) { view in
                     NavigationLink(value: Route.library(view)) {
@@ -421,68 +537,152 @@ struct LibrariesView: View {
 struct LibraryView: View {
     @EnvironmentObject private var session: Session
     let view: Item
-    /// Unwatched on any server; the rest, and the sorts, on a plain Jellyfin server, as the web app
-    /// offers them: an AIOStreams catalog keeps its own order, and finds those few only page by page.
+
+    private enum CollectionFilter: CaseIterable, Hashable {
+        case all, movies, shows
+
+        var label: String {
+            switch self {
+            case .all: return L("All")
+            case .movies: return L("Movies")
+            case .shows: return L("Shows")
+            }
+        }
+
+        var itemTypes: String? {
+            switch self {
+            case .all: return nil
+            case .movies: return "Movie"
+            case .shows: return "Series"
+            }
+        }
+    }
+
+    @State private var collectionFilter = CollectionFilter.all
     @State private var filter: ItemFilter?
     @State private var sort: SortKey = .name
     @State private var descending = false
     @State private var items: [Item] = []
+    @State private var offset = 0
     @State private var total = Int.max
     @State private var genre: String?
-    @State private var loading = false
-    @State private var started = false
+    @State private var loading = true
+    @State private var activeQuery: Query?
+    @State private var loadID = UUID()
+    @State private var failure: String?
+
+    private struct Query: Equatable {
+        let collection: CollectionFilter
+        let filter: ItemFilter?
+        let sort: SortKey
+        let descending: Bool
+    }
 
     private static let page = 60
+    private var isBoxSet: Bool { view.type == "BoxSet" }
+    private var query: Query { Query(collection: collectionFilter, filter: filter, sort: sort, descending: descending) }
 
     var body: some View {
         ScrollView {
-            PageTitle(text: view.name ?? L("Library"))
-            SortFilterBar(filters: session.isStock ? ItemFilter.allCases : [.unplayed], filter: $filter,
-                          sorts: session.isStock ? SortKey.allCases : [], sort: $sort, descending: $descending)
+            if isBoxSet {
+                collectionHeader
+            } else {
+                PageTitle(text: view.name ?? L("Library"))
+                SortFilterBar(filters: session.isStock ? ItemFilter.allCases : [.unplayed], filter: $filter,
+                              sorts: session.isStock ? SortKey.allCases : [], sort: $sort, descending: $descending)
+            }
             PosterGrid(items: items) { Task { await more() } }
             if loading { ProgressView().padding() }
-            if !loading && started && items.isEmpty {
-                Text(L("Nothing in this library.")).foregroundStyle(Theme.gray400)
+            if let failure {
+                VStack(spacing: Theme.px(12)) {
+                    Text(failure).foregroundStyle(Theme.gray400)
+                    Button(L("Try again")) { Task { await more() } }.buttonStyle(SoftPillStyle())
+                }
+                .padding()
+            } else if !loading && items.isEmpty {
+                Text(L("Nothing here.")).foregroundStyle(Theme.gray400)
             }
         }
         .edgeToEdge()
-        .task {
-            guard !started, let client = session.client, let userId = session.userId else { return }
-            started = true
-            genre = await openingGenre(client, userId: userId, view: view)
-            await more()
+        .washed(by: view)
+        .task(id: query) { await reload() }
+    }
+
+    private var collectionHeader: some View {
+        VStack(alignment: .leading, spacing: Theme.px(30)) {
+            HStack(alignment: .bottom, spacing: Theme.px(24)) {
+                RemoteImage(url: session.client?.poster(view, height: 540), contentMode: .fit)
+                    .frame(width: Theme.px(284), height: Theme.px(160))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.px(12)))
+                Text(view.name ?? L("Collection"))
+                    .font(Theme.font(Theme.xl3, .bold))
+                    .padding(.bottom, Theme.px(12))
+            }
+            HStack {
+                Text(L("In this collection")).font(Theme.font(Theme.xl, .semibold))
+                Spacer()
+                ForEach(CollectionFilter.allCases, id: \.self) { option in
+                    Button(option.label) { collectionFilter = option }
+                        .buttonStyle(SoftPillStyle(selected: collectionFilter == option))
+                }
+            }
+            .focusSection()
         }
-        .onChange(of: "\(filter?.rawValue ?? "")|\(sort.rawValue)|\(descending)") { _, _ in
-            Task { await reload() }
-        }
+        .pagePadding()
+        .padding(.top, Theme.px(40))
     }
 
     private func reload() async {
+        let asked = query
+        guard activeQuery != asked else { return }
+        let id = UUID()
+        loadID = id
+        activeQuery = nil
         items = []
+        offset = 0
         total = Int.max
+        loading = true
+        failure = nil
+        guard let client = session.client, let userId = session.userId else { loading = false; return }
+        let opening = await openingGenre(client, userId: userId, view: view)
+        guard !Task.isCancelled, id == loadID, asked == query else { return }
+        genre = opening
+        activeQuery = asked
+        loading = false
         await more()
     }
 
     private func more() async {
-        guard !loading, items.count < total, let client = session.client, let userId = session.userId else { return }
+        guard !loading, offset < total, let asked = activeQuery, asked == query,
+              let client = session.client, let userId = session.userId else { return }
+        let id = loadID
         loading = true
-        defer { loading = false }
-        let result: ItemsResult? = try? await client.get("/Items", [
-            "userId": userId,
-            "ParentId": view.id,
-            "StartIndex": String(items.count),
-            "Limit": String(Self.page),
-            "IncludeItemTypes": view.type == "BoxSet" ? nil : libraryTypes(view),
-            "GenreIds": genre,
-            "Recursive": "true",
-            "EnableTotalRecordCount": "true",
-            "Filters": filter?.jellyfin,
-            "SortBy": session.isStock ? sort.fields : nil,
-            "SortOrder": session.isStock ? (descending ? "Descending" : "Ascending") : nil,
-        ])
-        let page = result?.items ?? []
-        items.append(contentsOf: page.filter { new in !items.contains { $0.id == new.id } })
-        total = page.isEmpty ? items.count : (result?.totalRecordCount ?? Int.max)
+        failure = nil
+        defer { if id == loadID { loading = false } }
+
+        do {
+            let result: ItemsResult = try await client.get("/Items", [
+                "userId": userId,
+                "ParentId": view.id,
+                "StartIndex": String(offset),
+                "Limit": String(Self.page),
+                "IncludeItemTypes": isBoxSet ? asked.collection.itemTypes : libraryTypes(view),
+                "GenreIds": genre,
+                "Recursive": "true",
+                "EnableTotalRecordCount": "true",
+                "Filters": asked.filter?.jellyfin,
+                "SortBy": session.isStock && !isBoxSet ? asked.sort.fields : nil,
+                "SortOrder": session.isStock && !isBoxSet ? (asked.descending ? "Descending" : "Ascending") : nil,
+            ])
+            guard !Task.isCancelled, id == loadID, asked == query else { return }
+            let page = result.items ?? []
+            var seen = Set(items.map(\.id))
+            offset += page.count
+            items.append(contentsOf: page.filter { seen.insert($0.id).inserted })
+            total = page.isEmpty ? offset : (result.totalRecordCount ?? Int.max)
+        } catch {
+            if !Task.isCancelled, id == loadID, asked == query { failure = error.localizedDescription }
+        }
     }
 }
 

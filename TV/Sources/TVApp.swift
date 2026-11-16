@@ -201,7 +201,13 @@ struct SignInView: View {
             error = nil
             if mode == .quickConnect { startQuickConnect() } else { poll?.cancel() }
         }
-        .onExitCommand(perform: mode == .pick ? nil : { mode = .pick })
+        .onExitCommand(perform: exitAction)
+    }
+
+    private var exitAction: (() -> Void)? {
+        if mode != .pick { return { mode = .pick } }
+        if session.asking { return { session.carryOn() } }
+        return nil
     }
 
     private var picker: some View {
@@ -210,34 +216,45 @@ struct SignInView: View {
                 .font(Theme.font(Theme.xl2, .semibold))
                 .foregroundStyle(Theme.gray200)
             if !users.isEmpty {
-                HStack(spacing: Theme.px(40)) {
-                    ForEach(users) { user in
-                        Button {
-                            // Asked who's watching, whoever was carries on as they were.
-                            if session.asking && user.id == session.userId { session.carryOn(); return }
-                            name = user.name ?? ""
-                            password = ""
-                            if user.hasPassword == false { signIn() } else { mode = .password(user) }
-                        } label: {
-                            UserAvatar(user: user, url: avatarURL(user))
-                        }
-                        .buttonStyle(AvatarStyle())
-                    }
+                ViewThatFits(in: .horizontal) {
+                    profileAvatars
+                    ScrollView(.horizontal) { profileAvatars }
                 }
                 .focusSection()
             } else if !loaded {
                 ProgressView()
             }
             HStack(spacing: Theme.px(8)) {
-                Button(L("Other user")) { name = ""; password = ""; mode = .manual }
-                if quickConnectEnabled { Button(L("Quick Connect")) { mode = .quickConnect } }
+                if !session.asking || users.isEmpty {
+                    Button(L("Other user")) { name = ""; password = ""; mode = .manual }
+                    if quickConnectEnabled { Button(L("Quick Connect")) { mode = .quickConnect } }
+                }
                 Button(L("Change server")) { session.forgetServer() }
             }
             .buttonStyle(SoftPillStyle())
             .padding(.top, Theme.px(8))
             .focusSection()
-            SavedProfiles()
+            if !session.asking { SavedProfiles() }
         }
+        .padding(.horizontal, Theme.px(48))
+    }
+
+    private var profileAvatars: some View {
+        HStack(spacing: Theme.px(40)) {
+            ForEach(users) { user in
+                Button {
+                    if session.asking && user.id == session.userId { session.carryOn(); return }
+                    name = user.name ?? ""
+                    password = ""
+                    if user.hasPassword == false { signIn() } else { mode = .password(user) }
+                } label: {
+                    UserAvatar(user: user, url: avatarURL(user))
+                }
+                .buttonStyle(AvatarStyle())
+                .disabled(working)
+            }
+        }
+        .padding(Theme.px(10))
     }
 
     private func passwordForm(_ user: PublicUser) -> some View {
@@ -318,7 +335,7 @@ struct SignInView: View {
         users = (try? await client.get("/Users/Public") as [PublicUser]) ?? []
         quickConnectEnabled = (try? await client.get("/QuickConnect/Enabled") as Bool) ?? false
         loaded = true
-        if users.isEmpty { mode = quickConnectEnabled ? .quickConnect : .manual }
+        if users.isEmpty && !session.asking { mode = quickConnectEnabled ? .quickConnect : .manual }
     }
 
     private func startQuickConnect() {
@@ -382,19 +399,13 @@ struct UserAvatar: View {
     let user: PublicUser
     let url: URL?
 
-    private static let colours: [Color] = [
-        Color(red: 0.76, green: 0.71, blue: 0.89), Color(red: 0.72, green: 0.87, blue: 0.95),
-        Color(red: 1.0, green: 0.85, blue: 0.88), Color(red: 0.82, green: 0.95, blue: 0.84),
-        Color(red: 0.99, green: 0.89, blue: 0.72),
-    ]
-
     var body: some View {
         VStack(spacing: Theme.px(12)) {
             ZStack {
-                Circle().fill(Self.colours[user.id.unicodeScalars.reduce(0) { $0 + Int($1.value) } % Self.colours.count])
+                Circle().fill(Theme.brand500.opacity(0.38))
                 Text(String((user.name ?? "?").prefix(1)).uppercased())
                     .font(Theme.font(44, .bold))
-                    .foregroundStyle(.black.opacity(0.75))
+                    .foregroundStyle(.white)
                 if let url {
                     AsyncImage(url: url) { phase in
                         if case .success(let image) = phase { image.resizable().aspectRatio(contentMode: .fill) }

@@ -13,7 +13,7 @@ enum Place: String, CaseIterable, Identifiable {
 
     var name: String {
         switch self {
-        case .account: return L("You")
+        case .account: return L("Profiles")
         case .home: return L("Home")
         case .discover: return L("Discover")
         case .live: return L("Live TV")
@@ -219,7 +219,7 @@ struct MainView: View {
     @ViewBuilder private func page(_ place: Place) -> some View {
         switch place {
         case .home: HomeView()
-        case .discover: LibrariesView()
+        case .discover: DiscoverView()
         case .live:
             if let liveView { LiveTVView(view: liveView) } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         case .search: SearchView()
@@ -228,7 +228,7 @@ struct MainView: View {
         case .together: PartyView()
         case .calendar: CalendarView()
         case .activity: ActivityView()
-        case .account: SettingsView(start: .account)
+        case .account: SignInView()
         case .settings: SettingsView()
         }
     }
@@ -374,8 +374,7 @@ struct MainView: View {
 
     private func tab(_ item: Place, named: Bool = true) -> some View {
         Button {
-            if item == place { paths[item] = NavigationPath() }
-            place = item
+            select(item)
         } label: {
             TopTab(item: item, current: item == place, named: named, avatar: avatarURL)
         }
@@ -429,16 +428,20 @@ struct MainView: View {
         }
     }
 
+    private func select(_ item: Place) {
+        if item == .account {
+            session.chooseProfile()
+            return
+        }
+        if item == place { paths[item] = NavigationPath() }
+        place = item
+        if !top { leaveRail() }
+    }
+
     private func entry(_ item: Place) -> some View {
-        // You and Settings open the same page; only the one chosen shows as current.
         let current = item == place
         return Button {
-            if item == place {
-                // Choosing the place you're on goes back to its first page.
-                paths[item] = NavigationPath()
-            }
-            place = item
-            leaveRail()
+            select(item)
         } label: {
             RailEntry(item: item, current: current, open: open, avatar: avatarURL)
         }
@@ -460,7 +463,7 @@ private struct RailButtonStyle: ButtonStyle {
     }
 }
 
-/// One rail button: 48 px high and fully rounded, the current place filled, the focused one ringed.
+/// Rail focus and the current page are shown with icon and label weight.
 private struct RailEntry: View {
     @Environment(\.isFocused) private var focused
     let item: Place
@@ -468,8 +471,6 @@ private struct RailEntry: View {
     let open: Bool
     let avatar: URL?
 
-    /// An open entry's pill, icon and name together, as the web app's open rail draws it.
-    private static let openWidth = Theme.px(232)
     private static let width = Theme.px(56)
 
     var body: some View {
@@ -487,33 +488,19 @@ private struct RailEntry: View {
                     .clipShape(Circle())
                 } else {
                     Image(systemName: item.icon)
-                        .font(.system(size: Theme.px(20), weight: current ? .semibold : .regular))
+                        .font(.system(size: Theme.px(20), weight: current || focused ? .semibold : .regular))
                 }
             }
             .frame(width: Theme.px(24))
         }
         .padding(.horizontal, Theme.px(16))
         .frame(width: Self.width, height: Theme.px(48), alignment: .leading)
-        .foregroundStyle(focused ? Color.black : current ? Color.white : Theme.gray400)
-        // Drawn past the button's own frame, which focus moves are measured from. The page you're
-        // on is filled; where the remote is gets the app's focus ring, so the two never look alike.
-        .background(alignment: .leading) {
-            Capsule()
-                .fill(focused ? .white : current ? Theme.brand500.opacity(0.65) : .clear)
-                .frame(width: open ? Self.openWidth : Self.width, height: Theme.px(48))
-                .overlay {
-                    if focused {
-                        Capsule()
-                            .strokeBorder(Theme.ring, lineWidth: Theme.ringWidth)
-                            .padding(-(Theme.ringWidth + Theme.ringOffset))
-                    }
-                }
-        }
+        .foregroundStyle(focused || current ? Color.white : Theme.gray400)
         .overlay(alignment: .leading) {
             if open {
                 Text(item.name)
                     .font(Theme.font(Theme.base, focused || current ? .semibold : .medium))
-                    .foregroundStyle(focused ? Color.black : current ? Color.white : Theme.gray400)
+                    .foregroundStyle(focused || current ? Color.white : Theme.gray400)
                     .lineLimit(1)
                     .fixedSize()
                     .offset(x: Theme.px(56))
@@ -523,7 +510,7 @@ private struct RailEntry: View {
     }
 }
 
-/// One tab across the top: its icon and name in a pill, the current one filled, the focused one ringed.
+/// One tab across the top, with brighter text and icons on the current and focused tabs.
 private struct TopTab: View {
     @Environment(\.isFocused) private var focused
     let item: Place
@@ -544,7 +531,7 @@ private struct TopTab: View {
                 .frame(width: Theme.px(22), height: Theme.px(22))
                 .clipShape(Circle())
             } else {
-                Image(systemName: item.icon).font(.system(size: Theme.px(14), weight: current ? .semibold : .regular))
+                Image(systemName: item.icon).font(.system(size: Theme.px(14), weight: current || focused ? .semibold : .regular))
                 if item != .settings && named {
                     Text(item.name).font(Theme.font(Theme.sm, .medium)).lineLimit(1).fixedSize()
                 }
@@ -553,14 +540,7 @@ private struct TopTab: View {
         .padding(.horizontal, item == .account || item == .settings || !named ? Theme.px(10) : Theme.px(12))
         .frame(height: Theme.px(36))
         .foregroundStyle(current || focused ? Color.white : Theme.gray400)
-        .background(Capsule().fill(Color.white.opacity(current ? 0.14 : 0)))
-        .overlay {
-            if focused {
-                Capsule()
-                    .strokeBorder(Theme.ring, lineWidth: Theme.ringWidth)
-                    .padding(-(Theme.ringWidth + Theme.ringOffset))
-            }
-        }
+
     }
 }
 

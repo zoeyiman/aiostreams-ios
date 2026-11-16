@@ -213,6 +213,11 @@ final class Session: ObservableObject {
     /// Whoever was watching carries on, without signing in again.
     func carryOn() { asking = false }
 
+    func chooseProfile() {
+        guard stage == .signedIn else { return }
+        asking = true
+    }
+
     /// The app went to the background, or came back: after half an hour away, who's watching is asked.
     func left() { leftAt = Date() }
 

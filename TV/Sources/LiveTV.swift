@@ -56,7 +56,7 @@ struct LiveTVView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.px(12)) {
-            PageTitle(text: L("Live TV"))
+            header
             controls
             if showsGuide {
                 GuideView(channels: channels, schedules: schedules, window: window, now: now, play: play,
@@ -197,19 +197,10 @@ struct LiveTVView: View {
 
     // MARK: Groups and view
 
-    private var controls: some View {
-        HStack(spacing: Theme.px(20)) {
-            ScrollView(.horizontal) {
-                HStack(spacing: Theme.px(8)) {
-                    ForEach(groups) { item in
-                        Button(item.name) { choose(item.id) }
-                            .buttonStyle(SoftPillStyle(selected: item.id == group))
-                    }
-                }
-                .padding(Theme.px(5))
-            }
-            .focusSection()
-
+    private var header: some View {
+        HStack {
+            Text(L("Live TV")).font(Theme.font(Theme.xl3, .bold))
+            Spacer()
             HStack(spacing: Theme.px(4)) {
                 Button(L("Guide")) { setGuide(true) }
                     .buttonStyle(SoftPillStyle(selected: guide))
@@ -220,7 +211,23 @@ struct LiveTVView: View {
             .focusSection()
         }
         .pagePadding()
-        .padding(.vertical, Theme.px(5))
+        .padding(.top, Theme.px(40))
+    }
+
+    private var controls: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: Theme.px(8)) {
+                ForEach(groups) { item in
+                    Button(item.name) { choose(item.id) }
+                        .buttonStyle(SoftPillStyle(selected: item.id == group))
+                }
+            }
+            .padding(Theme.px(6))
+        }
+        .scrollClipDisabled(false)
+        .fixedSize(horizontal: false, vertical: true)
+        .pagePadding()
+        .focusSection()
     }
 
     private func setGuide(_ on: Bool) {

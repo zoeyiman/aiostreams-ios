@@ -374,13 +374,8 @@ struct HeroCarousel: View {
                 .transition(.opacity)
             if items.count > 1 && followed == nil { dots }
         }
-        .frame(height: height + Theme.topBarInset)
+        .frame(height: height)
         .frame(maxWidth: .infinity)
-        // Under the rail, or up under the top bar, as the web app's hero is: no band of the page's
-        // colour between the bar and the art.
-        .padding(.leading, -Theme.railInset)
-        .clipped()
-        .padding(.top, -Theme.topBarInset)
         .animation(.easeInOut(duration: 0.6), value: index)
         .task(id: "\(item.id)-\(items.count)-\(focus == nil)-\(prefs.heroSeconds)") {
             guard focus == nil, items.count > 1, followed == nil else { return }
@@ -415,9 +410,6 @@ struct HeroCarousel: View {
         }
     }
 
-    /// Over the background from artwork, the art fades out rather than under the page's colour.
-    private var overArtwork: Bool { prefs.flag("artBackground", false) }
-
     /// A narrow, invisible stop beside the buttons that turns the hero when focus reaches it.
     private func slip(_ action: HeroAction, enabled: Bool) -> some View {
         Color.clear
@@ -428,37 +420,14 @@ struct HeroCarousel: View {
 
     /// Keep the entire backdrop in frame and hold its picture until the next one loads.
     private var backdrop: some View {
-        GeometryReader { geometry in
-            let width = min(geometry.size.width, height * 2.6)
-            HeroArtwork(url: session.client?.backdrop(item, height: 1080))
-                .frame(width: width, height: height)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
+        HeroArtwork(url: session.client?.backdrop(item, height: 1080))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var shade: some View {
-        ZStack(alignment: .bottom) {
-            if !overArtwork {
-            LinearGradient(
-                stops: [
-                    .init(color: Theme.background, location: 0),
-                    .init(color: Theme.background.opacity(0.7), location: 0.35),
-                    .init(color: .clear, location: 1),
-                ],
-                startPoint: .start,
-                endPoint: .end
-            )
-            LinearGradient(
-                stops: [
-                    .init(color: Theme.background, location: 0),
-                    .init(color: Theme.background.opacity(0.6), location: 0.5),
-                    .init(color: .clear, location: 1),
-                ],
-                startPoint: .bottom,
-                endPoint: .top
-            )
-            .frame(height: height * 2 / 3)
-            }
+        ZStack {
+            LinearGradient(colors: [.black.opacity(0.78), .clear], startPoint: .leading, endPoint: .trailing)
+            LinearGradient(colors: [.black.opacity(0.85), .clear], startPoint: .bottom, endPoint: .center)
         }
         .allowsHitTesting(false)
     }
@@ -496,7 +465,7 @@ struct HeroCarousel: View {
             .focusSection()
         }
         .frame(maxWidth: Theme.px(768), alignment: .leading)
-        .padding(.leading, Theme.railInset + pageInset)
+        .padding(.leading, Theme.px(20))
         .padding(.bottom, Theme.px(56))
     }
 
@@ -567,8 +536,18 @@ private struct HeroArtwork: View {
     var body: some View {
         Color.clear
             .overlay {
-                if let image {
-                    Image(uiImage: image).resizable().scaledToFit()
+                GeometryReader { geometry in
+                    if let image {
+                        ZStack {
+                            Image(uiImage: image).resizable().scaledToFill()
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                                .blur(radius: Theme.px(32), opaque: true)
+                                .opacity(0.55)
+                            Image(uiImage: image).resizable().scaledToFit()
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                        }
+                        .clipped()
+                    }
                 }
             }
             .task(id: url) {
