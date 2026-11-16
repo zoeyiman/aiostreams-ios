@@ -23,17 +23,44 @@ extension View {
                     LibraryView(view: Item(id: "", name: type == "Movie" ? L("Latest movies") : L("Latest shows"),
                                            collectionType: type == "Movie" ? "movies" : "tvshows"), latest: true)
                 case .rowResults(let title, let items, let wide):
-                    ScrollView {
-                        PageTitle(text: title)
-                        PosterGrid(items: items, wide: wide)
-                    }
-                    .edgeToEdge()
+                    RowResultsView(title: title, items: items, wide: wide)
                 case .person(let person): PersonView(person: person)
                 case .playlist(let playlist): PlaylistView(playlist: playlist)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
         }
+    }
+}
+
+private struct RowResultsView: View {
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    let items: [Item]
+    let wide: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.px(10)) {
+            HStack(spacing: Theme.px(14)) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                        .font(Theme.font(Theme.base, .semibold))
+                        .frame(width: Theme.px(28), height: Theme.px(28))
+                }
+                .buttonStyle(SoftPillStyle())
+                .accessibilityLabel(L("Back"))
+                Text(title).font(Theme.font(Theme.xl3, .bold))
+            }
+            .pagePadding()
+            .padding(.top, pageTop)
+            .focusSection()
+            ScrollView {
+                PosterGrid(items: items, wide: wide)
+                    .padding(.bottom, pageMargin)
+            }
+            .edgeToEdge()
+        }
+        .onExitCommand { dismiss() }
     }
 }
 
@@ -240,6 +267,7 @@ struct PosterLink: View {
     var previews = false
     var showsTitle = false
     var portrait = false
+    var gridWidth: CGFloat?
     @State private var opened = false
 
     /// A poster's width at the web app's Poster size: small, medium or large.
@@ -249,8 +277,8 @@ struct PosterLink: View {
 
     private var stillWide: Bool { wide || (item.isEpisode && !portrait) }
     private var size: CGSize {
-        let width = Self.width(prefs.posterSize)
-        let base = stillWide ? WideCard.size : CGSize(width: width, height: width * 1.5)
+        let width = gridWidth ?? (stillWide ? WideCard.size.width : Self.width(prefs.posterSize))
+        let base = CGSize(width: width, height: width * (stillWide ? 9.0 / 16.0 : 1.5))
         // Opened, the card is as tall as the poster and as wide as a 16:9 picture that tall.
         return opened ? CGSize(width: base.height * 16 / 9, height: base.height) : base
     }
@@ -392,29 +420,35 @@ private struct RefreshOnReturn: ViewModifier {
     }
 }
 
-/// Posters in rows of six, which a page of items shows.
+/// Fit a whole number of cards and divide the usable width evenly between them.
 struct PosterGrid: View {
     @EnvironmentObject private var prefs: Preferences
+    @State private var availableWidth: CGFloat = 0
     let items: [Item]
     var onLast: (() -> Void)? = nil
     var wide = false
 
-    private var columns: [GridItem] {
-        let size = wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)
-        return [GridItem(.adaptive(minimum: size, maximum: size), spacing: Theme.px(16))]
+    private let gap = Theme.px(16)
+    private var preferredWidth: CGFloat { wide ? WideCard.size.width : PosterLink.width(prefs.posterSize) }
+    private var count: Int { max(1, Int((availableWidth + gap) / (preferredWidth + gap))) }
+    private var cardWidth: CGFloat {
+        guard availableWidth > 0 else { return preferredWidth }
+        return (availableWidth - CGFloat(count - 1) * gap) / CGFloat(count)
     }
 
     var body: some View {
         LazyVGrid(
-            columns: columns,
+            columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: gap, alignment: .topLeading), count: count),
             alignment: .leading,
             spacing: Theme.px(28)
         ) {
             ForEach(items) { item in
-                PosterLink(item: item, wide: wide, showsTitle: wide, portrait: !wide)
+                PosterLink(item: item, wide: wide, showsTitle: wide, portrait: !wide, gridWidth: cardWidth)
                     .onAppear { if item.id == items.last?.id { onLast?() } }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
         .pagePadding()
         .padding(.vertical, Theme.px(16))
     }
