@@ -296,10 +296,6 @@ final class Preferences: ObservableObject {
     @Published var seekStep: Int = UserDefaults.standard.object(forKey: "controls.seekStep") as? Int ?? 10 {
         didSet { UserDefaults.standard.set(seekStep, forKey: "controls.seekStep") }
     }
-    /// The time left rather than the whole length beside the position.
-    @Published var showTimeLeft: Bool = UserDefaults.standard.bool(forKey: "controls.timeLeft") {
-        didSet { UserDefaults.standard.set(showTimeLeft, forKey: "controls.timeLeft") }
-    }
     /// The time of day in the player's top corner.
     @Published var showClock: Bool = UserDefaults.standard.object(forKey: "controls.clock") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showClock, forKey: "controls.clock") }
@@ -551,7 +547,6 @@ struct SettingsView: View {
                     chooser = Chooser(title: L("Skip step"), options: [5, 10, 15, 30].map { (L("%ld seconds", $0), String($0)) },
                                       current: String(prefs.seekStep)) { prefs.seekStep = Int($0) ?? 10 }
                 }
-                row(L("Show time left"), value: prefs.showTimeLeft ? L("On") : L("Off")) { prefs.showTimeLeft.toggle() }
                 row(L("Show the clock"), value: prefs.showClock ? L("On") : L("Off")) { prefs.showClock.toggle() }
                 row(L("Show Sync controls"), value: prefs.showSyncControls ? L("On") : L("Off")) { prefs.showSyncControls.toggle() }
                 row(L("Held speed"), value: L("%@×", rateName(prefs.holdRate))) {
