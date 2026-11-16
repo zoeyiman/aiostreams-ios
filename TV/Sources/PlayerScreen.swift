@@ -20,11 +20,13 @@ struct PlayerScreen: View {
     /// The episode a version is being found for, to play on in.
     @State private var finding: Item?
     @State private var changingChannel = false
+    @State private var switchingEpisode: Item?
 
     var body: some View {
         Group {
             if let model {
                 PlayerChrome(model: model, close: finish, playNext: { next in Task { await playOn(next) } }, finding: finding,
+                             pickEpisode: { next in Task { await playOn(next, showArtwork: true) } },
                              leave: close, changeChannel: { step in Task { await changeChannel(step) } },
                              chooseAnotherVersion: {
                                  listVersions(model.request.item)
@@ -32,6 +34,11 @@ struct PlayerScreen: View {
                              })
                     // A new title starts the controls over.
                     .id(model.request.id)
+                    .onReceive(Publishers.CombineLatest3(model.$started, model.$waiting, model.$failure)) { started, waiting, failure in
+                        if switchingEpisode?.id == model.request.item.id, (started && !waiting) || failure != nil {
+                            switchingEpisode = nil
+                        }
+                    }
                     .onReceive(model.$started.removeDuplicates()) { started in
                         guard started else { return }
                         let item = model.request.item
@@ -45,7 +52,11 @@ struct PlayerScreen: View {
         }
         .ignoresSafeArea()
         .overlay(alignment: .bottom) {
-            if let finding {
+            if let switchingEpisode {
+                EpisodeLoadingView(item: switchingEpisode)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            } else if let finding {
                 HStack(spacing: Theme.px(12)) {
                     ProgressView()
                     Text(L("Finding a version of %@…", "\(finding.displayTitle)")).font(Theme.font(Theme.base, .medium))
@@ -107,10 +118,14 @@ struct PlayerScreen: View {
 
     /// Plays the next episode here, in the version that carries on from this one: the same binge
     /// group, else the only or first one where allowed. Without one, its versions are listed.
-    private func playOn(_ next: Item) async {
+    private func playOn(_ next: Item, showArtwork: Bool = false) async {
         guard finding == nil, let current = model, let client = session.client, let userId = session.userId else { return }
         finding = next
-        defer { finding = nil }
+        if showArtwork { switchingEpisode = next }
+        defer {
+            finding = nil
+            if model?.request.item.id != next.id { switchingEpisode = nil }
+        }
         let info = try? await client.playbackInfo(userId: userId, itemId: next.id)
         let sources = (info?.mediaSources ?? []).filter { $0.aiostreams?.ytId == nil }
         let group = current.request.source.aiostreams?.bingeGroup
@@ -195,6 +210,7 @@ private struct PlayerChrome: View {
     let close: () -> Void
     let playNext: (Item) -> Void
     let finding: Item?
+    let pickEpisode: (Item) -> Void
     /// Closes the player's screen with the video still going, for Picture in Picture.
     var leave: () -> Void = {}
     /// Up or down on a channel's video: the next or previous channel.
@@ -406,6 +422,17 @@ private struct PlayerChrome: View {
                 playbackHeader
             }
 
+            if panel == .episodes {
+                Color.black.opacity(0.62).ignoresSafeArea().allowsHitTesting(false)
+                EpisodesDrawer(item: model.request.item, close: closePanel) { episode in
+                    closePanel()
+                    input()
+                    pickEpisode(episode)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                .transition(.move(edge: .trailing))
+            }
+
             if panel == nil && model.failure == nil {
                 VStack(alignment: .trailing, spacing: Theme.px(12)) {
                     if let notice {
@@ -574,7 +601,7 @@ private struct PlayerChrome: View {
 
     private var controlsDock: some View {
         VStack(alignment: .leading, spacing: Theme.px(8)) {
-            if let panel, panel != .chapters {
+            if let panel, panel != .chapters, panel != .episodes {
                 dockedPanel(panel)
             }
             if model.paused && !model.isLive && model.failure == nil && panel == nil {
@@ -615,11 +642,7 @@ private struct PlayerChrome: View {
     }
 
     private func dockedPanel(_ panel: PlayerPanel) -> some View {
-        PlayerPanelView(model: model, panel: panel, play: { episode in
-            closePanel()
-            input()
-            playNext(episode)
-        }) { closePanel() }
+        PlayerPanelView(model: model, panel: panel) { closePanel() }
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
@@ -1108,11 +1131,8 @@ private struct PlayerPanelView: View {
     @EnvironmentObject private var session: Session
     @ObservedObject var model: PlayerModel
     let panel: PlayerPanel
-    /// Plays another episode, from the Episodes panel.
-    let play: (Item) -> Void
     let done: () -> Void
     @Namespace private var menuFocus
-    @State private var episodes: [Item] = []
     @EnvironmentObject private var prefs: Preferences
     /// Subtitles in other languages, which List only my languages keeps under More languages.
     @State private var allLanguages = false
@@ -1211,7 +1231,6 @@ private struct PlayerPanelView: View {
         .focusScope(menuFocus)
         .focusSection()
         .onExitCommand(perform: done)
-        .task(id: panel) { if panel == .episodes { await loadEpisodes() } }
     }
 
     private var choices: some View {
@@ -1253,32 +1272,13 @@ private struct PlayerPanelView: View {
                             }
                         }
                     }
-                case .sync:
+                case .sync, .episodes:
                     EmptyView()
-                case .episodes:
-                    group(nil) {
-                        if episodes.isEmpty { ProgressView().frame(maxWidth: .infinity) }
-                        ForEach(episodes) { episode in
-                            row(episode.displayTitle, detail: episode.userData?.played == true ? L("Watched") : episode.timeLeft,
-                                on: episode.id == model.request.item.id) {
-                                if episode.id != model.request.item.id { play(episode) }
-                            }
-                        }
-                    }
                 }
             }
             .padding(Theme.px(4))
         }
         .frame(height: Theme.px(224))
-    }
-
-    /// The season playing, as its show lists it.
-    private func loadEpisodes() async {
-        let item = model.request.item
-        guard let client = session.client, let userId = session.userId, let series = item.seriesId else { return }
-        let found: ItemsResult? = try? await client.get("/Shows/\(series)/Episodes", ["userId": userId, "SeasonId": item.seasonId])
-        // One not out yet can't play.
-        episodes = (found?.items ?? []).filter { $0.locationType != "Virtual" }
     }
 
     /// Earlier, the value, later, and back to zero.
@@ -1449,6 +1449,199 @@ private struct ChapterTileStyle: ButtonStyle {
             configuration.label
                 .opacity(focused ? 1 : 0.82)
                 .scaleEffect(focused ? 1.045 : 1)
+                .opacity(configuration.isPressed ? 0.8 : 1)
+        }
+    }
+}
+
+
+/// Artwork covers the old frame while the chosen episode opens.
+private struct EpisodeLoadingView: View {
+    @EnvironmentObject private var session: Session
+    let item: Item
+
+    private var logoItem: Item {
+        var copy = item
+        copy.name = item.seriesName ?? item.name
+        return copy
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black
+            RemoteImage(url: session.client?.backdrop(item, height: 1080)
+                        ?? session.client?.still(item, height: 1080))
+                .overlay(Color.black.opacity(0.64))
+            VStack(spacing: Theme.px(20)) {
+                TitleLogo(item: logoItem, maxHeight: Theme.px(130), maxWidth: Theme.px(430), titleSize: 44)
+                Text(item.displayTitle).font(Theme.font(Theme.base, .medium))
+                ProgressView().progressViewStyle(.linear).frame(width: Theme.px(140))
+            }
+            .foregroundStyle(.white)
+            .padding(Theme.px(36))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+    }
+}
+
+private struct EpisodesDrawer: View {
+    @EnvironmentObject private var session: Session
+    @EnvironmentObject private var prefs: Preferences
+    @State private var seasons: [Item] = []
+    @State private var selectedSeason: String?
+    @State private var episodes: [Item]?
+    @State private var failed = false
+    @State private var pendingUnaired: Item?
+    @State private var confirmsUnaired = false
+    @FocusState private var focusedEpisode: String?
+    let item: Item
+    let close: () -> Void
+    let play: (Item) -> Void
+
+    private var seasonID: String? { selectedSeason ?? item.seasonId ?? seasons.first?.id }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.px(12)) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: Theme.px(4)) {
+                    Text(L("Episodes").uppercased()).font(Theme.font(Theme.xs, .semibold)).foregroundStyle(Theme.gray300)
+                    Text(item.seriesName ?? item.name ?? L("Episodes")).font(Theme.font(Theme.lg, .semibold)).lineLimit(2)
+                }
+                Spacer(minLength: Theme.px(8))
+                Button(action: close) { Image(systemName: "xmark") }
+                    .buttonStyle(ControlIconStyle())
+                    .accessibilityLabel(L("Close"))
+            }
+            .padding(.horizontal, Theme.px(16))
+            if seasons.count > 1 {
+                ScrollView(.horizontal) {
+                    HStack(spacing: Theme.px(6)) {
+                        ForEach(seasons) { season in
+                            Button(season.name ?? L("Season")) { selectedSeason = season.id }
+                                .buttonStyle(SoftPillStyle(selected: season.id == seasonID))
+                                .accessibilityAddTraits(season.id == seasonID ? .isSelected : [])
+                        }
+                    }
+                    .padding(.horizontal, Theme.px(16))
+                    .padding(.vertical, Theme.px(4))
+                }
+                .focusSection()
+            }
+            Divider()
+            episodeList
+        }
+        .padding(.vertical, Theme.px(23))
+        .frame(width: Theme.px(410))
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Color(white: 0.055))
+        .focusSection()
+        .task { await loadSeasons() }
+        .task(id: seasonID) { await loadEpisodes(seasonID) }
+        .alert(L("This episode hasn't aired yet."), isPresented: $confirmsUnaired, presenting: pendingUnaired) { episode in
+            Button(L("Play anyway")) { play(episode) }
+            Button(L("Cancel"), role: .cancel) {}
+        }
+    }
+
+    private var episodeList: some View {
+        ScrollViewReader { reader in
+            ScrollView {
+                LazyVStack(spacing: Theme.px(6)) {
+                    if let episodes {
+                        if episodes.isEmpty {
+                            Text(L("No episodes found.")).foregroundStyle(Theme.gray300).padding()
+                        }
+                        ForEach(episodes) { episode in
+                            let playing = item.id == episode.id
+                            Button {
+                                if playing { close() }
+                                else if prefs.markUnaired, let date = parseDate(episode.premiereDate), date > Date() {
+                                    pendingUnaired = episode
+                                    confirmsUnaired = true
+                                } else { play(episode) }
+                            } label: {
+                                episodeRow(episode, playing: playing)
+                            }
+                            .buttonStyle(EpisodeDrawerRowStyle(playing: playing))
+                            .disabled(!playing && !episode.playable)
+                            .focused($focusedEpisode, equals: episode.id)
+                            .accessibilityAddTraits(playing ? .isSelected : [])
+                            .id(episode.id)
+                        }
+                    } else if failed {
+                        Text(L("Could not load the episodes.")).padding()
+                    } else {
+                        ProgressView().padding()
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, Theme.px(10))
+                .padding(.vertical, Theme.px(6))
+            }
+            .onChange(of: episodes?.map(\.id)) { previous, ids in
+                if previous == nil, ids?.contains(item.id) == true {
+                    reader.scrollTo(item.id, anchor: .center)
+                    focusedEpisode = item.id
+                }
+            }
+        }
+        .focusSection()
+    }
+
+    private func episodeRow(_ episode: Item, playing: Bool) -> some View {
+        let date = parseDate(episode.premiereDate)?.formatted(.dateTime.month(.abbreviated).day().year().locale(AppLanguage.locale))
+        let duration = episode.timeLeft ?? episode.runtimeMinutes.map { L("%ldm", $0) }
+        let title = episode.indexNumber.map { "\($0). \(episode.name ?? episode.displayTitle)" } ?? episode.displayTitle
+        return HStack(alignment: .top, spacing: Theme.px(12)) {
+            RemoteImage(url: session.client?.still(episode, height: 180))
+                .frame(width: Theme.px(128), height: Theme.px(72))
+                .overlay(alignment: .bottomLeading) {
+                    if let percent = episode.userData?.playedPercentage, !playing, episode.userData?.played != true, percent > 0 {
+                        Rectangle().fill(Theme.ring)
+                            .frame(width: Theme.px(128) * CGFloat(min(percent, 100)) / 100, height: Theme.px(3))
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: Theme.px(8)))
+            VStack(alignment: .leading, spacing: Theme.px(4)) {
+                Text(title).font(Theme.font(Theme.sm, .semibold)).lineLimit(2)
+                Text(playing ? L("Playing") : [date, duration].compactMap { $0 }.joined(separator: " · "))
+                    .font(Theme.font(Theme.xs)).foregroundStyle(playing ? Color.white : Theme.gray300)
+                    .lineLimit(1)
+            }
+        }
+        .padding(Theme.px(7))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func loadSeasons() async {
+        guard let client = session.client, let userId = session.userId, let series = item.seriesId else { return }
+        let result: ItemsResult? = try? await client.get("/Shows/\(series)/Seasons", ["userId": userId])
+        if !Task.isCancelled { seasons = result?.items ?? [] }
+    }
+
+    private func loadEpisodes(_ season: String?) async {
+        guard let client = session.client, let userId = session.userId, let series = item.seriesId else { return }
+        episodes = nil
+        failed = false
+        let result: ItemsResult? = try? await client.get("/Shows/\(series)/Episodes", ["userId": userId, "SeasonId": season])
+        guard !Task.isCancelled, season == seasonID else { return }
+        if let result {
+            episodes = result.items ?? []
+        } else {
+            failed = true
+        }
+    }
+}
+
+private struct EpisodeDrawerRowStyle: ButtonStyle {
+    let playing: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        Focused { focused in
+            configuration.label
+                .background(.white.opacity(focused ? 0.18 : playing ? 0.10 : 0), in: RoundedRectangle(cornerRadius: Theme.px(10)))
+                .focusRing(focused)
                 .opacity(configuration.isPressed ? 0.8 : 1)
         }
     }
