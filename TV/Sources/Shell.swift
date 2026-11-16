@@ -193,8 +193,15 @@ struct MainView: View {
         .onChange(of: place) { previous, _ in
             paths.removeValue(forKey: previous)
         }
-        .onChange(of: railFocus) { _, focused in
-            if top, let focused, Place.main.contains(focused), focused != place {
+        .onChange(of: railFocus) { previous, focused in
+            guard top, let focused else { return }
+            // Like the web app's navigationBack, enter the bar at the current page.
+            // A directional move within the bar can then switch pages.
+            if previous == nil {
+                if focused != place { railFocus = place }
+                return
+            }
+            if Place.main.contains(focused), focused != place {
                 place = focused
             }
         }
