@@ -69,8 +69,7 @@ struct PlayFlow: ViewModifier {
     @State private var partyNext: PlayRequest?
     /// Waits for the version sheet to close, as one screen can't open over another closing.
     @State private var pendingPlay: PlayRequest?
-    /// The title a version is being found for, without the list.
-    @State private var finding: Item?
+    @State private var finding = false
     /// An episode the player played on to, whose versions are listed once the player has closed.
     @State private var listAfterPlayer: VersionChoice?
 
@@ -93,20 +92,6 @@ struct PlayFlow: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .overlay(alignment: .bottom) {
-                if let finding {
-                    VStack(spacing: Theme.px(8)) {
-                        Text(L("Finding a version of %@…", finding.isEpisode ? finding.displayTitle : finding.name ?? L("this")))
-                            .font(Theme.font(Theme.base, .medium))
-                        ProgressView().progressViewStyle(.linear).frame(width: Theme.px(220))
-                    }
-                    .padding(.horizontal, Theme.px(20))
-                    .padding(.vertical, Theme.px(12))
-                    .background(Capsule().fill(Color(white: 17 / 255).opacity(0.95)))
-                    .padding(.bottom, Theme.px(40))
-                    .transition(.opacity)
-                }
-            }
             .onChange(of: pictureInPicture.restoring?.request.id) { _, _ in
                 guard restoresPictureInPicture, let model = pictureInPicture.restoring, playing == nil else { return }
                 restored = model
@@ -178,9 +163,9 @@ struct PlayFlow: ViewModifier {
 
     /// The version that was playing, else the first; the list where there's none to play.
     private func playStraight(_ choice: VersionChoice) async {
-        guard let client = session.client, let userId = session.userId else { return }
-        finding = choice.item
-        defer { finding = nil }
+        guard !finding, let client = session.client, let userId = session.userId else { return }
+        finding = true
+        defer { finding = false }
         let info = try? await client.playbackInfo(userId: userId, itemId: choice.item.id)
         let sources = (info?.mediaSources ?? []).filter { $0.aiostreams?.ytId == nil }
         let last = (choice.startMs ?? 0) > 0 ? LastVersions.find(choice.item.id, in: sources) : nil

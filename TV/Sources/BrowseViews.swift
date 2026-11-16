@@ -145,29 +145,12 @@ extension EnvironmentValues {
     }
 }
 
-/// The native equivalent of AIOStreams' data-nav-resume row entry.
+/// Shares shelf focus without redirecting or scrolling when SwiftUI updates focus.
 struct MediaRowFocus: ViewModifier {
-    let entry: MediaRowTarget?
-    let resetShelf: () -> Void
     @FocusState private var focused: MediaRowTarget?
 
-    init(entry: MediaRowTarget? = .browse, resetShelf: @escaping () -> Void) {
-        self.entry = entry
-        self.resetShelf = resetShelf
-    }
-
     func body(content: Content) -> some View {
-        content
-            .environment(\.mediaRowFocus, $focused)
-            .onChange(of: focused) { previous, current in
-                guard let current, let entry else { return }
-                if previous == nil, current != entry {
-                    resetShelf()
-                    focused = entry
-                } else if current == .browse {
-                    resetShelf()
-                }
-            }
+        content.environment(\.mediaRowFocus, $focused)
     }
 }
 
@@ -234,9 +217,7 @@ struct ItemRow: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
                 .edgeToEdge()
             }
-            .modifier(MediaRowFocus {
-                if let first = cards.first { scroller.scrollTo(MediaRowTarget.item(first.id), anchor: .leading) }
-            })
+            .modifier(MediaRowFocus())
         }
         .focusSection()
     }
@@ -533,15 +514,16 @@ struct PosterGrid: View {
     var wide = false
     var compact = false
     var episodeDetails = false
+    var columns: Int?
 
     private let gap = Theme.px(16)
     private var preferredWidth: CGFloat {
         if compact { return wide ? Theme.px(236) : Theme.px(138) }
         return wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)
     }
-    private var count: Int { max(1, Int((availableWidth + gap) / (preferredWidth + gap))) }
+    private var count: Int { columns ?? max(1, Int((availableWidth + gap) / (preferredWidth + gap))) }
     private var cardWidth: CGFloat {
-        guard availableWidth > 0 else { return preferredWidth }
+        guard availableWidth > CGFloat(count - 1) * gap else { return preferredWidth }
         return (availableWidth - CGFloat(count - 1) * gap) / CGFloat(count)
     }
 
@@ -574,10 +556,29 @@ struct DiscoverView: View {
     @State private var loaded = false
     @State private var message: String?
 
+    @State private var showSeries = false
+    @State private var unwatched = false
+    @State private var genre: String?
+    @State private var exploreItems: [Item] = []
+    @State private var isTrending = false
+    @State private var loadedExplore: ExploreQuery?
+
+    private static let genres = ["Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary",
+                                 "Drama", "Family", "Fantasy", "History", "Horror", "Music", "Mystery",
+                                 "Romance", "Science Fiction", "Thriller"]
+
+    private struct ExploreQuery: Equatable {
+        let series: Bool
+        let unwatched: Bool
+        let genre: String?
+    }
+
+    private var query: ExploreQuery { ExploreQuery(series: showSeries, unwatched: unwatched, genre: genre) }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Theme.px(28)) {
-                HStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: Theme.px(14)) {
+                HStack {
                     Text(L("Discover")).font(Theme.font(Theme.xl3, .bold))
                     Spacer()
                     NavigationLink {
@@ -589,25 +590,81 @@ struct DiscoverView: View {
                 }
                 .pagePadding()
                 .padding(.top, pageTop)
+                HStack(spacing: Theme.px(8)) {
+                    Button(L("Movies")) { showSeries = false }.buttonStyle(SoftPillStyle(selected: !showSeries))
+                    Button(L("TV Shows")) { showSeries = true }.buttonStyle(SoftPillStyle(selected: showSeries))
+                    Button(L("Unwatched")) { unwatched.toggle() }.buttonStyle(SoftPillStyle(selected: unwatched))
+                }
+                .pagePadding()
+                .focusSection()
+                ScrollView(.horizontal) {
+                    HStack(spacing: Theme.px(8)) {
+                        Button(L("All genres")) { genre = nil }.buttonStyle(SoftPillStyle(selected: genre == nil))
+                        ForEach(Self.genres, id: \.self) { name in
+                            Button(name) { genre = name }.buttonStyle(SoftPillStyle(selected: genre == name))
+                        }
+                    }
+                    .pagePadding()
+                    .padding(.vertical, Theme.px(6))
+                }
+                .focusSection()
 
-                if !movies.isEmpty {
-                    ItemRow(row: HomeRow(id: "discover.movies", title: L("Movies for you"), items: movies))
+                if loadedExplore == query && !exploreItems.isEmpty {
+                    Text(genre ?? (isTrending ? L("Trending Now") : L("Explore titles"))).font(Theme.font(Theme.xl, .semibold)).pagePadding()
+                    PosterGrid(items: exploreItems, columns: 6)
                 }
-                if !shows.isEmpty {
-                    ItemRow(row: HomeRow(id: "discover.shows", title: L("Shows for you"), items: shows))
-                }
-                if !loaded {
-                    ProgressView().frame(maxWidth: .infinity)
-                } else if let message {
-                    Text(message).foregroundStyle(Theme.gray400).pagePadding()
+                if genre == nil {
+                    let picks = showSeries ? shows : movies
+                    if !picks.isEmpty {
+                        Text(showSeries ? L("Shows for you") : L("Movies for you"))
+                            .font(Theme.font(Theme.xl, .semibold)).pagePadding()
+                        PosterGrid(items: picks, columns: 6)
+                    } else if exploreItems.isEmpty, let message {
+                        Text(message).foregroundStyle(Theme.gray400).pagePadding()
+                    }
+                } else if loadedExplore == query && exploreItems.isEmpty {
+                    Text(L("No titles in this genre.")).foregroundStyle(Theme.gray400).pagePadding()
                 }
             }
             .padding(.bottom, Theme.px(44))
         }
-        .edgeToEdge()
+        .scrollClipDisabled(false)
         .task { await load() }
-        .refreshOnReturn { await load() }
-        .reloadOnWatchChange { await load() }
+        .task(id: query) { await loadExplore(query) }
+        .refreshOnReturn { await load(); await loadExplore(query) }
+        .reloadOnWatchChange { await load(); await loadExplore(query) }
+    }
+
+    private func loadExplore(_ asked: ExploreQuery) async {
+        guard let client = session.client, let userId = session.userId else { return }
+        let kind = asked.series ? "Series" : "Movie"
+        let views: ItemsResult? = try? await client.get("/UserViews", ["userId": userId])
+        let trending = views?.items?.first {
+            homeCatalogKind($0) == .trending && libraryTypes($0).split(separator: ",").contains(Substring(kind))
+        }
+        guard !Task.isCancelled, asked == query else { return }
+        var parameters: [String: String?] = [
+            "userId": userId, "Recursive": "true", "IncludeItemTypes": kind,
+            "ParentId": trending?.id, "Genres": asked.genre, "Limit": "48",
+            "EnableUserData": "true", "Fields": "Genres",
+            "Filters": asked.unwatched ? "IsUnplayed" : nil,
+        ]
+        let result: ItemsResult? = try? await client.get("/Items", parameters)
+        var matches = result?.items ?? []
+        let fromTrending = trending != nil && !matches.isEmpty
+        if trending != nil && matches.isEmpty {
+            parameters.removeValue(forKey: "ParentId")
+            parameters["SortBy"] = "DateCreated"
+            parameters["SortOrder"] = "Descending"
+            let fallback: ItemsResult? = try? await client.get("/Items", parameters)
+            matches = fallback?.items ?? []
+        }
+        guard !Task.isCancelled, asked == query else { return }
+        isTrending = fromTrending
+        loadedExplore = asked
+        exploreItems = matches.filter { title in
+            title.type == kind && (!asked.unwatched || title.userData?.played != true)
+        }
     }
 
     private func load() async {
@@ -1041,16 +1098,16 @@ struct FavouritesView: View {
         VStack(alignment: .leading, spacing: Theme.px(10)) {
             PageTitle(text: L("Favorites"))
             HStack(spacing: Theme.px(12)) {
+                Button { newestFirst.toggle() } label: {
+                    Label(L("Date added"), systemImage: newestFirst ? "arrow.down" : "arrow.up")
+                }
+                .buttonStyle(SoftPillStyle())
+                .accessibilityLabel(newestFirst ? L("Date added, newest first") : L("Date added, oldest first"))
                 segments(Media.allCases, selection: $media, title: { $0.title })
                     .accessibilityLabel(L("Media type"))
                 Spacer(minLength: Theme.px(12))
                 segments(Watch.allCases, selection: $watch, title: { $0.title })
                     .accessibilityLabel(L("Watch status"))
-                Button { newestFirst.toggle() } label: {
-                    Image(systemName: newestFirst ? "arrow.down" : "arrow.up")
-                }
-                .buttonStyle(CircleIconStyle())
-                .accessibilityLabel(newestFirst ? L("Date added, newest first") : L("Date added, oldest first"))
             }
             .pagePadding()
             .focusSection()
@@ -1066,7 +1123,7 @@ struct FavouritesView: View {
                 PosterGrid(items: filtered)
                     .padding(.bottom, pageMargin)
             }
-            .edgeToEdge()
+            .scrollClipDisabled(false)
         }
         .task(id: newestFirst) { await load() }
         .refreshOnReturn { await load() }
@@ -1209,22 +1266,16 @@ struct SearchView: View {
     private func titleRow(_ heading: String, items: [Item]) -> some View {
         VStack(alignment: .leading, spacing: Theme.px(8)) {
             Text(heading).font(Theme.font(Theme.xl, .semibold)).pagePadding()
-            ScrollViewReader { scroller in
-                ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                        ForEach(items) { item in
-                            PosterLink(item: item).id(MediaRowTarget.item(item.id))
-                        }
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                    ForEach(items) { item in
+                        PosterLink(item: item).id(MediaRowTarget.item(item.id))
                     }
-                    .pagePadding()
-                    .padding(.vertical, Theme.px(8))
                 }
-                .modifier(MediaRowFocus(entry: items.first.map { .item($0.id) }) {
-                    if let first = items.first {
-                        scroller.scrollTo(MediaRowTarget.item(first.id), anchor: .leading)
-                    }
-                })
+                .pagePadding()
+                .padding(.vertical, Theme.px(8))
             }
+            .modifier(MediaRowFocus())
         }
         .focusSection()
     }

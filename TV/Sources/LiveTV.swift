@@ -259,7 +259,7 @@ struct LiveTVView: View {
                         choosingGroup = false
                         choose(item.id)
                     }
-                    .buttonStyle(SoftPillStyle(selected: item.id == group))
+                    .buttonStyle(ChannelGroupStyle(selected: item.id == group))
                 }
                 if usePicker {
                     Button {
@@ -294,7 +294,7 @@ struct LiveTVView: View {
                                 .padding(.horizontal, Theme.px(9))
                                 .padding(.vertical, Theme.px(8))
                         }
-                        .buttonStyle(SoftPillStyle(selected: entry.id == group))
+                        .buttonStyle(ChannelGroupStyle(selected: entry.id == group))
                     }
                 }
             }
@@ -1048,5 +1048,23 @@ private struct GuideRow: View {
         }
         .buttonStyle(RowStyle(radius: Theme.px(8)))
         .padding(.trailing, GuideView.gap)
+    }
+}
+
+private struct ChannelGroupStyle: ButtonStyle {
+    let selected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        Focused { focused in
+            HStack(spacing: Theme.px(4)) {
+                if selected { Image(systemName: "checkmark").font(Theme.font(Theme.xs, .semibold)) }
+                configuration.label
+            }
+                .font(Theme.font(Theme.sm, .semibold))
+                .padding(.horizontal, Theme.px(8))
+                .frame(minHeight: Theme.px(38))
+                .foregroundStyle(focused ? Color.black : .white)
+                .background(focused ? Color.white : selected ? Color(red: 0.16, green: 0.38, blue: 0.68) : Color.white.opacity(0.08), in: Capsule())
+        }
     }
 }

@@ -386,7 +386,7 @@ struct HeroCarousel: View {
         GeometryReader { geometry in
             let inset = Theme.railInset
             let artWash = prefs.flag("artBackground", false)
-            HeroArtwork(url: session.client?.backdrop(item, height: 1080))
+            HeroArtwork(url: session.client?.heroArtwork(item))
                 .overlay {
                     ZStack {
                         if artWash {
@@ -523,7 +523,7 @@ private struct HeroArtwork: View {
                         Color.clear
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .overlay(alignment: .top) {
-                                Image(uiImage: image).resizable().scaledToFit()
+                                Image(uiImage: image).resizable().scaledToFill()
                                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
                             }
                         .clipped()
@@ -585,30 +585,26 @@ struct WideRow: View {
     let play: (Item) -> Void
 
     var body: some View {
-        ScrollViewReader { scroller in
-            VStack(alignment: .leading, spacing: Theme.px(12)) {
-                HStack(spacing: Theme.px(8)) {
-                    Text(title).font(Theme.font(Theme.xl, .semibold))
-                    RowBrowseArrow(title: title, route: browseRoute)
+        VStack(alignment: .leading, spacing: Theme.px(12)) {
+            HStack(spacing: Theme.px(8)) {
+                Text(title).font(Theme.font(Theme.xl, .semibold))
+                RowBrowseArrow(title: title, route: browseRoute)
+            }
+            .pagePadding()
+            .focusSection()
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                    ForEach(items) { item in
+                        WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
+                            .id(MediaRowTarget.item(item.id))
+                    }
                 }
                 .pagePadding()
-                .focusSection()
-                ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                        ForEach(items) { item in
-                            WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
-                                .id(MediaRowTarget.item(item.id))
-                        }
-                    }
-                    .pagePadding()
-                    .padding(.vertical, Theme.px(8))
-                }
-                .edgeToEdge()
+                .padding(.vertical, Theme.px(8))
             }
-            .modifier(MediaRowFocus {
-                if let first = items.first { scroller.scrollTo(MediaRowTarget.item(first.id), anchor: .leading) }
-            })
+            .edgeToEdge()
         }
+        .modifier(MediaRowFocus())
         .focusSection()
     }
 }

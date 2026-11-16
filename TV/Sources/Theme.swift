@@ -182,8 +182,7 @@ struct CardStyle: ButtonStyle {
         Focused { focused in
             configuration.label
                 .brightness(focused ? 0.10 : 0)
-                .scaleEffect(focused ? 1.025 : 1)
-                .opacity(configuration.isPressed ? 0.85 : 1)
+                .scaleEffect(configuration.isPressed ? 1 : focused ? 1.025 : 1)
         }
     }
 }

@@ -61,15 +61,7 @@ struct PlayerScreen: View {
                 EpisodeLoadingView(item: switchingEpisode)
                     .allowsHitTesting(false)
                     .transition(.opacity)
-            } else if let finding {
-                VStack(spacing: Theme.px(8)) {
-                    Text(L("Finding a version of %@…", "\(finding.displayTitle)")).font(Theme.font(Theme.base, .medium))
-                    ProgressView().progressViewStyle(.linear).frame(width: Theme.px(220))
-                }
-                .padding(.horizontal, Theme.px(20))
-                .padding(.vertical, Theme.px(12))
-                .background(Capsule().fill(Color(white: 17 / 255).opacity(0.95)))
-                .padding(.bottom, Theme.px(40))
+
             }
         }
         // The party stopped this title, or moved on: its player closes.
@@ -237,7 +229,7 @@ enum UnattendedPlays {
 }
 
 private enum PlayerFocus: Hashable {
-    case surface, bar, play, back, forward, tracks, audio, chapters, speed, fit, skip, next, nextEpisode, keepWatching, stop, sync, episodes, versions, stats, pip
+    case surface, bar, tracks, audio, chapters, speed, fit, skip, next, nextEpisode, keepWatching, stop, sync, episodes, versions, stats, pip
 }
 
 private enum PlayerPanel: Hashable {
@@ -391,28 +383,25 @@ private struct PlayerChrome: View {
             .frame(width: 0, height: 0)
 
             // Takes the remote while the controls are hidden.
-            Color.clear
-                .contentShape(Rectangle())
-                .focusable(!shown && panel == nil)
+            Button(action: remotePlayPause) {
+                Color.clear.contentShape(Rectangle())
+            }
+                .buttonStyle(.plain)
+                .disabled(shown || panel != nil || model.failure != nil)
+                .accessibilityLabel(model.paused ? L("Play") : L("Pause"))
                 .focused($focus, equals: .surface)
                 .onMoveCommand { direction in
                     input()
                     switch direction {
                     // Live, there's nothing to skip through: a press only shows the controls.
-                    case .left where model.isLive, .right where model.isLive: reveal(.play)
+                    case .left where model.isLive, .right where model.isLive: reveal(.bar)
                     case .left: if !moved(-1) { model.skip(-step) }; if prefs.showOnPauseAndSkip { reveal(.bar) }
                     case .right: if !moved(1) { model.skip(step) }; if prefs.showOnPauseAndSkip { reveal(.bar) }
                     // On a channel, up and down change channel, as a TV's remote does.
                     case .up where model.request.item.isChannel: changeChannel(-1)
                     case .down where model.request.item.isChannel: changeChannel(1)
-                    default: reveal(.play)
+                    default: reveal(.bar)
                     }
-                }
-                .onTapGesture {
-                    if heldSelect { heldSelect = false; return }
-                    input()
-                    if model.isLive { model.togglePause() }
-                    reveal(.play)
                 }
 
             if let rate = model.heldRate {
@@ -434,7 +423,7 @@ private struct PlayerChrome: View {
             }
 
             if model.waiting && model.failure == nil {
-                ProgressView().progressViewStyle(.linear).frame(width: Theme.px(160))
+                ProgressView()
             }
             if let failure = model.failure { failureCard(failure) }
 
@@ -526,7 +515,7 @@ private struct PlayerChrome: View {
             else if model.failure != nil && canChooseAnotherVersion { chooseAnotherVersion() }
             else if upNextShown && (focus == .next || !shown) {
                 upNextDismissed = true
-                focus = shown ? .play : .surface
+                focus = shown ? .bar : .surface
             } else if skipShown && focus == .skip && !shown {
                 offerFresh = false
                 focus = .surface
@@ -534,7 +523,7 @@ private struct PlayerChrome: View {
             else if shown && model.failure == nil { hide() }
             else { close() }
         }
-        .onAppear { focus = .play; wake() }
+        .onAppear { focus = .bar; wake() }
         // Another device's remote: the player takes what plays here, the pages the rest.
         .onAppear { ServerEvents.shared.playerHandler = remote }
         .onDisappear { ServerEvents.shared.playerHandler = nil }
@@ -554,13 +543,13 @@ private struct PlayerChrome: View {
         .onChange(of: inside?.id) { _, _ in enter(inside) }
         .onChange(of: skipShown) { _, showing in
             if showing && !shown { focus = .skip }
-            if !showing && focus == .skip { focus = shown ? .play : .surface }
+            if !showing && focus == .skip { focus = shown ? .bar : .surface }
         }
         .onChange(of: upNextShown) { _, showing in
             if showing && !shown { focus = .next }
             if !showing {
                 countdownLeft = prefs.nextCountdown
-                if focus == .next { focus = shown ? .play : .surface }
+                if focus == .next { focus = shown ? .bar : .surface }
             }
         }
         .onChange(of: upNextDue) { _, due in if !due { upNextDismissed = false } }
@@ -666,7 +655,15 @@ private struct PlayerChrome: View {
                         liveTitle
                         transportButtons.fixedSize(horizontal: true, vertical: false).focusSection()
                     }
-                    Capsule().fill(.white.opacity(0.22)).frame(height: Theme.px(3))
+                    Button(action: remotePlayPause) {
+                        Capsule().fill(.white.opacity(focus == .bar ? 0.65 : 0.22))
+                            .frame(height: Theme.px(3))
+                            .frame(height: Theme.px(16))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .focused($focus, equals: .bar)
+                    .accessibilityLabel(model.paused ? L("Play") : L("Pause"))
                     if !recentLive.isEmpty {
                         VStack(alignment: .leading, spacing: Theme.px(7)) {
                             Text(L("Recently watched")).font(Theme.font(Theme.sm, .semibold))
@@ -725,8 +722,11 @@ private struct PlayerChrome: View {
     private var timeline: some View {
         let position = model.scrubTarget ?? model.position
         return VStack(alignment: .leading, spacing: Theme.px(4)) {
-            ProgressTrack(model: model, focused: focus == .bar)
-                .focusable(shown && panel == nil)
+            Button(action: remotePlayPause) {
+                ProgressTrack(model: model, focused: focus == .bar)
+                    .contentShape(Rectangle())
+            }
+                .buttonStyle(.plain)
                 .focused($focus, equals: .bar)
                 .accessibilityLabel(L("Playback position"))
                 .onMoveCommand { direction in
@@ -738,7 +738,6 @@ private struct PlayerChrome: View {
                     }
                     wake()
                 }
-                .onTapGesture { model.togglePause(); wake() }
                 .overlay(alignment: .bottomLeading) { scrubPreview }
             HStack {
                 Text(clock(position))
@@ -755,28 +754,6 @@ private struct PlayerChrome: View {
 
     private var transportButtons: some View {
         HStack(spacing: Theme.px(8)) {
-            Button { model.togglePause() } label: {
-                Image(systemName: model.paused ? "play.fill" : "pause.fill")
-            }
-            .buttonStyle(ControlIconStyle(flat: !model.isLive, primary: !model.isLive))
-            .accessibilityLabel(model.paused ? L("Play") : L("Pause"))
-            .focused($focus, equals: .play)
-            if model.isLive {
-                Text(L("LIVE"))
-                    .font(Theme.font(Theme.sm, .bold))
-                    .padding(.horizontal, Theme.px(10))
-                    .padding(.vertical, Theme.px(4))
-                    .background(Capsule().fill(Color.red.opacity(0.85)))
-                    .padding(.leading, Theme.px(12))
-            } else {
-                Button { model.skip(-step) } label: { Image(systemName: "gobackward.\(prefs.seekStep)") }
-                    .buttonStyle(ControlIconStyle(flat: !model.isLive))
-                    .focused($focus, equals: .back)
-                Button { model.skip(step) } label: { Image(systemName: "goforward.\(prefs.seekStep)") }
-                    .buttonStyle(ControlIconStyle(flat: !model.isLive))
-                    .focused($focus, equals: .forward)
-
-            }
             if !model.isLive { Spacer(minLength: Theme.px(12)) }
             if model.nextEpisode != nil && model.party == nil {
                 Button { playOn(auto: false) } label: { Image(systemName: "forward.end.fill") }
@@ -1091,6 +1068,13 @@ private struct PlayerChrome: View {
     // MARK: Showing and hiding
 
     /// Shows the controls, focusing `target` where given.
+    private func remotePlayPause() {
+        if heldSelect { heldSelect = false; return }
+        input()
+        model.togglePause()
+        reveal(.bar)
+    }
+
     private func reveal(_ target: PlayerFocus?) {
         shown = true
         if let target { focus = target }
@@ -1127,7 +1111,7 @@ private struct PlayerChrome: View {
         case .audio: focus = .audio
         case .chapters: focus = .chapters
         case .speed: focus = .speed
-        case .sync: focus = prefs.showSyncControls ? .sync : .play
+        case .sync: focus = prefs.showSyncControls ? .sync : .bar
         case .episodes: focus = .episodes
         case .versions: focus = .versions
         case nil: break

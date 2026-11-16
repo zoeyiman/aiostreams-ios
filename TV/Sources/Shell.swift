@@ -59,7 +59,6 @@ struct MainView: View {
     @State private var choice: VersionChoice?
     @Namespace private var railScope
     @Namespace private var topBarScope
-    @State private var topBarExit: Task<Void, Never>?
     /// The whole screen, rail and page, which focus is re-picked within after a rail choice.
     @Namespace private var shellScope
     @Environment(\.resetFocus) private var resetFocus
@@ -200,7 +199,6 @@ struct MainView: View {
             }
         }
         .onChange(of: railFocus) { previous, focused in
-            topBarExit?.cancel()
             guard top, let focused else { return }
             // Like the web app's navigationBack, enter the bar at the current page.
             // A directional move within the bar can then switch pages.
@@ -386,17 +384,6 @@ struct MainView: View {
         .frame(width: UIScreen.main.bounds.width, height: Theme.topBarInset, alignment: .topLeading)
         .focusSection()
         .focusScope(topBarScope)
-        // Let the system move into the page. Only retry if the same tab still has focus.
-        .onMoveCommand { direction in
-            topBarExit?.cancel()
-            guard direction == .down, let focused = railFocus else { return }
-            let active = place
-            topBarExit = Task {
-                try? await Task.sleep(for: .milliseconds(120))
-                guard !Task.isCancelled, top, railFocus == focused, place == active else { return }
-                leaveRail()
-            }
-        }
         .disabled(DemoMode.keepsRailShut || railLocked)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }

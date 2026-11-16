@@ -46,7 +46,7 @@ struct DetailView: View {
                 .padding(.top, Theme.px(187))
                 .padding(.bottom, Theme.px(64))
             }
-            .edgeToEdge()
+            .scrollClipDisabled(false)
         }
         .overlay(alignment: .topLeading) {
             Button { dismiss() } label: {
@@ -248,12 +248,12 @@ struct DetailView: View {
                         }
                     }
                     .pagePadding()
-                    .padding(.vertical, Theme.px(6))
+                    .padding(.vertical, Theme.px(12))
                 }
-                .edgeToEdge()
+                .scrollClipDisabled(false)
                 .focusSection()
             } else if let only = seasons.first {
-                Text(only.name ?? L("Episodes")).font(Theme.font(Theme.xl, .semibold))
+                Text(only.name ?? L("Episodes")).font(Theme.font(Theme.xl, .semibold)).pagePadding()
             }
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: Theme.px(16)) {

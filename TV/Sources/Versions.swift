@@ -179,11 +179,7 @@ struct VersionsView: View {
             }
             .padding(Theme.px(40))
         } else {
-            VStack(spacing: Theme.px(12)) {
-                ProgressView().progressViewStyle(.linear).frame(width: Theme.px(200))
-                Text(L("Searching your addons…")).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray400)
-            }
-            .padding(Theme.px(48))
+            Color.clear.accessibilityHidden(true)
         }
     }
 
@@ -393,7 +389,7 @@ struct PlaybackVersionsPopup: View {
                 Text(failed ? L("Could not load versions.") : L("No versions available."))
                     .padding(.vertical, Theme.px(12))
             } else {
-                ProgressView().progressViewStyle(.linear).padding(.vertical, Theme.px(12))
+                ProgressView().padding(.vertical, Theme.px(12))
                     .accessibilityLabel(L("Finding versions"))
             }
         }

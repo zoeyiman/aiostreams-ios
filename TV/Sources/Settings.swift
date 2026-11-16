@@ -756,13 +756,17 @@ struct SettingsView: View {
                        options: [(L("Automatic"), "auto"), (L("12-hour"), "12"), (L("24-hour"), "24")])
             }
             section(prefs.tvNavigation == "top" ? L("Top bar tabs") : L("Sidebar tabs"), note: nil) {
-                ForEach(prefs.sidebarOrder.filter {
-                    prefs.tvNavigation != "top" || Place.main.contains($0)
-                }) { place in
-                    let hidden = prefs.hiddenSidebarTabs.contains(place)
-                    row(place.name, value: hidden ? L("Hidden") : L("Shown")) {
-                        editSidebarTab(place, hidden: hidden)
+                let tabs = prefs.sidebarOrder.filter { prefs.tvNavigation != "top" || Place.main.contains($0) }
+                ForEach(Array(tabs.enumerated()), id: \.element) { index, place in
+                    HStack(spacing: Theme.px(8)) {
+                        let hidden = prefs.hiddenSidebarTabs.contains(place)
+                        row(place.name, value: hidden ? L("Hidden") : L("Shown")) {
+                            editSidebarTab(place, hidden: hidden)
+                        }
+                        tabOrderButton(place, towards: index > 0 ? tabs[index - 1] : nil, earlier: true)
+                        tabOrderButton(place, towards: index + 1 < tabs.count ? tabs[index + 1] : nil, earlier: false)
                     }
+                    .padding(.trailing, Theme.px(8))
                 }
                 if prefs.sidebarOrder != Place.sidebarDefault {
                     row(L("Reset tab order"), value: "") { prefs.resetSidebarOrder() }
@@ -999,11 +1003,25 @@ struct SettingsView: View {
         }
     }
 
+    private func tabOrderButton(_ place: Place, towards neighbor: Place?, earlier: Bool) -> some View {
+        Button {
+            guard let neighbor, let start = prefs.sidebarOrder.firstIndex(of: place),
+                  let end = prefs.sidebarOrder.firstIndex(of: neighbor) else { return }
+            prefs.moveSidebarTab(place, by: end - start)
+        } label: {
+            Image(systemName: earlier ? "chevron.up" : "chevron.down")
+        }
+        .buttonStyle(CircleIconStyle())
+        .disabled(neighbor == nil)
+        .accessibilityLabel(earlier ? L("Move %@ earlier", place.name) : L("Move %@ later", place.name))
+    }
+
     private func editSidebarTab(_ place: Place, hidden: Bool) {
         let tabs = prefs.sidebarOrder.filter { prefs.tvNavigation != "top" || Place.main.contains($0) }
         guard let index = tabs.firstIndex(of: place),
               let fullIndex = prefs.sidebarOrder.firstIndex(of: place) else { return }
         var options: [(String, String)] = []
+        if index > 0 { options.append((L("Move to first"), "first")) }
         if index > 0 { options.append((prefs.tvNavigation == "top" ? L("Move left") : L("Move up"), "up")) }
         if index + 1 < tabs.count {
             options.append((prefs.tvNavigation == "top" ? L("Move right") : L("Move down"), "down"))
@@ -1017,6 +1035,12 @@ struct SettingsView: View {
                 let neighbor = tabs[index + (action == "up" ? -1 : 1)]
                 if let target = prefs.sidebarOrder.firstIndex(of: neighbor) {
                     prefs.moveSidebarTab(place, by: target - fullIndex)
+                }
+            case "first":
+                for previous in tabs[..<index].reversed() {
+                    guard let start = prefs.sidebarOrder.firstIndex(of: place),
+                          let end = prefs.sidebarOrder.firstIndex(of: previous) else { continue }
+                    prefs.moveSidebarTab(place, by: end - start)
                 }
             case "visibility": prefs.toggleSidebarTab(place)
             default: break

@@ -610,6 +610,18 @@ struct JellyfinClient: Sendable {
         return nil
     }
 
+    /// Viren's hero requests full-width backdrop artwork, then falls back to a landscape cover.
+    func heroArtwork(_ item: Item) -> URL? {
+        let width = 1920
+        if let tag = item.backdropImageTags?.first { return image(item.id, .backdrop, tag: tag, width: width) }
+        if let id = item.parentBackdropItemId, let tag = item.parentBackdropImageTags?.first {
+            return image(id, .backdrop, tag: tag, width: width)
+        }
+        if let tag = item.tag("Thumb") { return image(item.id, .thumb, tag: tag, width: width) }
+        if let tag = item.tag("Primary") { return image(item.id, .primary, tag: tag, width: width) }
+        return nil
+    }
+
     // MARK: - Playback
 
     /// Every file plays as it is; text subtitles come as WebVTT addresses.
