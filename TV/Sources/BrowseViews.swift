@@ -148,7 +148,6 @@ extension EnvironmentValues {
 /// The native equivalent of AIOStreams' data-nav-resume row entry.
 struct MediaRowFocus: ViewModifier {
     let targets: [MediaRowTarget]
-    var browsedTarget: MediaRowTarget? = nil
     let reveal: (MediaRowTarget) -> Void
     @FocusState private var focused: MediaRowTarget?
     @State private var remembered: MediaRowTarget?
@@ -156,9 +155,6 @@ struct MediaRowFocus: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.mediaRowFocus, $focused)
-            .onChange(of: browsedTarget) { _, target in
-                if let target { remembered = target }
-            }
             .onChange(of: focused) { previous, current in
                 guard let current else { return }
                 // Moving within the row stays under the system's directional focus engine.
@@ -193,73 +189,7 @@ struct MediaRowCardFocus: ViewModifier {
     }
 }
 
-/// Like the desktop carousel, the arrows move to the next or previous snap in this row.
-struct MediaRowScroll: Equatable {
-    var offset: CGFloat = 0
-    var extent: CGFloat = 0
-    var viewportWidth: CGFloat = 0
-
-    init() {}
-
-    init(_ geometry: ScrollGeometry, rightToLeft: Bool) {
-        viewportWidth = geometry.containerSize.width
-        extent = max(0, geometry.contentSize.width + geometry.contentInsets.leading
-                     + geometry.contentInsets.trailing - geometry.containerSize.width)
-        let fromLeft = geometry.contentOffset.x + (rightToLeft ? geometry.contentInsets.trailing : geometry.contentInsets.leading)
-        offset = min(extent, max(0, rightToLeft ? extent - fromLeft : fromLeft))
-    }
-}
-
-struct MediaRowArrows: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let scroll: MediaRowScroll
-    let stride: CGFloat
-    let targets: [MediaRowTarget]
-    let move: (MediaRowTarget) -> Void
-
-    var body: some View {
-        HStack(spacing: Theme.px(4)) {
-            arrow(forward: false, enabled: scroll.offset > 1)
-            arrow(forward: true, enabled: scroll.offset < scroll.extent - 1)
-        }
-    }
-
-    private func arrow(forward: Bool, enabled: Bool) -> some View {
-        Button {
-            let position = scroll.offset / stride
-            let index = forward ? Int(floor(position + 1 / stride)) + 1 : Int(ceil(position - 1 / stride)) - 1
-            guard !targets.isEmpty else { return }
-            let target = targets[min(targets.count - 1, max(0, index))]
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { move(target) }
-        } label: {
-            Image(systemName: forward ? "chevron.forward" : "chevron.backward")
-                .font(.system(size: Theme.px(15), weight: .semibold))
-                .frame(width: Theme.px(34), height: Theme.px(34))
-        }
-        .buttonStyle(RowScrollArrowStyle())
-        .disabled(!enabled)
-        .accessibilityLabel(forward ? L("Scroll forward") : L("Scroll back"))
-    }
-}
-
-private struct RowScrollArrowStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var enabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        Focused { focused in
-            configuration.label
-                .foregroundStyle(.white.opacity(enabled ? 0.95 : 0.35))
-                .background(.white.opacity(focused ? 0.25 : 0.08), in: Circle())
-                .focusRing(focused)
-                .opacity(configuration.isPressed ? 0.75 : 1)
-        }
-    }
-}
-
 struct ItemRow: View {
-    @EnvironmentObject private var prefs: Preferences
-    @State private var rowScroll = MediaRowScroll()
-    @State private var browsedTarget: MediaRowTarget?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
     @Namespace private var previewViewport
@@ -267,10 +197,12 @@ struct ItemRow: View {
     let row: HomeRow
 
     private var cards: [Item] { Array(row.items.prefix(24)) }
-    private var hasMoreCard: Bool { !row.collection && row.library != nil }
-    private var targets: [MediaRowTarget] {
-        cards.map { .item($0.id) } + (hasMoreCard ? [.more] : [])
+    private var browseRoute: Route {
+        if let library = row.library { return row.collection ? .collectionCovers(library) : .library(library) }
+        return row.browseRoute ?? .rowResults(title: row.title, items: row.items)
     }
+
+    private var targets: [MediaRowTarget] { cards.map { .item($0.id) } + [.more] }
 
     var body: some View {
         ScrollViewReader { scroller in
@@ -280,23 +212,8 @@ struct ItemRow: View {
                     if row.collection, row.library != nil {
                         Text(L("Collections")).foregroundStyle(Theme.gray400)
                     }
-                    if let library = row.library {
-                        RowBrowseArrow(title: row.title, route: row.collection ? .collectionCovers(library) : .library(library))
-                    } else {
-                        RowBrowseArrow(title: row.title, route: row.browseRoute ?? .rowResults(title: row.title, items: row.items))
-                    }
-                    Spacer()
-                    MediaRowArrows(scroll: rowScroll, stride: (row.wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)) + Theme.px(16),
-                                   targets: targets) { target in
-                        browsedTarget = target
-                        let width = row.wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)
-                        let leading = min(1, pageInset / max(1, rowScroll.viewportWidth - width))
-                        let anchor = UnitPoint(x: layoutDirection == .rightToLeft ? 1 - leading : leading, y: 0.5)
-                        scroller.scrollTo(target, anchor: anchor)
-                    }
                 }
                 .pagePadding()
-                .focusSection()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                         ForEach(cards) { item in
@@ -307,10 +224,8 @@ struct ItemRow: View {
                             }
                             .id(MediaRowTarget.item(item.id))
                         }
-                        if hasMoreCard, let library = row.library {
-                            SeeAllCard(library: library, wide: row.wide)
-                                .id(MediaRowTarget.more)
-                        }
+                        SeeAllCard(title: row.title, route: browseRoute, wide: row.wide)
+                            .id(MediaRowTarget.more)
                     }
                     .pagePadding()
                     .padding(.vertical, Theme.px(8))
@@ -318,10 +233,7 @@ struct ItemRow: View {
                 .coordinateSpace(name: previewViewport)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
                 .edgeToEdge()
-                .onScrollGeometryChange(for: MediaRowScroll.self) {
-                    MediaRowScroll($0, rightToLeft: layoutDirection == .rightToLeft)
-                } action: { _, scroll in rowScroll = scroll }
-                .modifier(MediaRowFocus(targets: targets, browsedTarget: browsedTarget) { scroller.scrollTo($0) })
+                .modifier(MediaRowFocus(targets: targets) { scroller.scrollTo($0) })
             }
         }
         .focusSection()
@@ -342,35 +254,9 @@ struct ItemRow: View {
     }
 }
 
-struct RowBrowseArrow: View {
+struct SeeAllCard: View {
     let title: String
     let route: Route
-
-    var body: some View {
-        NavigationLink(value: route) {
-            Image(systemName: "chevron.right")
-                .font(Theme.font(Theme.sm, .semibold))
-                .frame(width: Theme.px(24), height: Theme.px(28))
-        }
-        .buttonStyle(RowBrowseArrowStyle())
-        .accessibilityLabel(L("See all: %@", title))
-    }
-}
-
-private struct RowBrowseArrowStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Focused { focused in
-            configuration.label
-                .foregroundStyle(focused ? Color.white : Theme.gray400)
-                .scaleEffect(focused ? 1.18 : 1)
-                .opacity(configuration.isPressed ? 0.75 : 1)
-        }
-    }
-}
-
-/// The last card in a library's row, the size of its posters, that opens the library.
-struct SeeAllCard: View {
-    let library: Item
     var wide = false
 
     private var size: CGSize {
@@ -378,8 +264,8 @@ struct SeeAllCard: View {
     }
 
     var body: some View {
-        NavigationLink(value: Route.library(library)) {
-            SeeAllFace(name: library.name ?? L("Library"))
+        NavigationLink(value: route) {
+            SeeAllFace(name: title)
                 .frame(width: size.width, height: size.height)
         }
         .buttonStyle(CardStyle())
@@ -1074,21 +960,85 @@ struct FavouritesView: View {
     @State private var descending = true
     @State private var items: [Item] = []
     @State private var loaded = false
+    @State private var media: Media = .all
+    @State private var watch: Watch = .all
+    @State private var resumingIDs = Set<String>()
+    @State private var loadID = UUID()
+
+    private enum Media: CaseIterable {
+        case all, movies, shows
+
+        var title: String {
+            switch self {
+            case .all: return L("All")
+            case .movies: return L("Movies")
+            case .shows: return L("Shows")
+            }
+        }
+
+        func matches(_ item: Item) -> Bool {
+            switch self {
+            case .all: return true
+            case .movies: return item.type == "Movie"
+            case .shows: return item.isSeries || item.isEpisode
+            }
+        }
+    }
+
+    private enum Watch: CaseIterable {
+        case all, watched, inProgress, notStarted
+
+        var title: String {
+            switch self {
+            case .all: return L("All")
+            case .watched: return L("Watched")
+            case .inProgress: return L("In progress")
+            case .notStarted: return L("Not started")
+            }
+        }
+    }
+
+    private var filtered: [Item] {
+        items.filter { item in
+            guard media.matches(item) else { return false }
+            if watch == .all { return true }
+            let state: Watch
+            if item.resumeMs != nil || resumingIDs.contains(item.id) {
+                state = .inProgress
+            } else if item.userData?.played == true {
+                state = .watched
+            } else if item.isSeries && (item.userData?.lastPlayedDate != nil || item.aiostreams?.showWatchedAt != nil) {
+                state = .inProgress
+            } else {
+                state = .notStarted
+            }
+            return state == watch
+        }
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.px(10)) {
-                PageTitle(text: L("Favourites"))
+                PageTitle(text: L("Favorites"))
+                HStack {
+                    segments(Media.allCases, selection: $media, title: { $0.title })
+                        .accessibilityLabel(L("Media type"))
+                    Spacer(minLength: Theme.px(12))
+                    segments(Watch.allCases, selection: $watch, title: { $0.title })
+                        .accessibilityLabel(L("Watch status"))
+                }
+                .pagePadding()
+                .focusSection()
                 SortFilterBar(filter: .constant(nil), sorts: [.added, .name, .released, .rating], sort: $sort, descending: $descending)
-                if loaded && items.isEmpty {
-                    Text(L("Titles you favourite show here."))
+                if loaded && filtered.isEmpty {
+                    Text(items.isEmpty ? L("Titles you favorite show here.") : L("No favorites match these filters."))
                         .font(Theme.font(Theme.base))
                         .foregroundStyle(Theme.gray400)
                         .pagePadding()
                         .padding(.vertical, Theme.px(16))
                         .focusable()
                 }
-                PosterGrid(items: items)
+                PosterGrid(items: filtered)
             }
             .padding(.bottom, pageMargin)
         }
@@ -1099,9 +1049,32 @@ struct FavouritesView: View {
         .onChange(of: "\(sort.rawValue)|\(descending)") { _, _ in Task { await load() } }
     }
 
+    private func segments<Option: Hashable>(_ options: [Option], selection: Binding<Option>,
+                                            title: (Option) -> String) -> some View {
+        HStack(spacing: Theme.px(3)) {
+            ForEach(options, id: \.self) { option in
+                Button { selection.wrappedValue = option } label: {
+                    Text(title(option))
+                        .font(Theme.font(Theme.sm, .semibold))
+                        .padding(.horizontal, Theme.px(12))
+                        .padding(.vertical, Theme.px(6))
+                }
+                .buttonStyle(CollectionSegmentStyle(selected: selection.wrappedValue == option))
+                .accessibilityAddTraits(selection.wrappedValue == option ? .isSelected : [])
+            }
+        }
+        .padding(Theme.px(4))
+        .background(.white.opacity(0.12), in: Capsule())
+    }
+
     private func load() async {
         guard let client = session.client, let userId = session.userId else { return }
-        let result: ItemsResult? = try? await client.get("/Items", [
+        let id = UUID()
+        loadID = id
+        async let resume: ItemsResult? = try? client.get("/UserItems/Resume", [
+            "userId": userId, "MediaTypes": "Video", "Limit": "250",
+        ])
+        async let favorites: ItemsResult? = try? client.get("/Items", [
             "userId": userId,
             "Filters": "IsFavorite",
             "Recursive": "true",
@@ -1109,7 +1082,14 @@ struct FavouritesView: View {
             "SortBy": sort.fields,
             "SortOrder": descending ? "Descending" : "Ascending",
         ])
-        items = result?.items ?? []
+        let (result, progress) = await (favorites, resume)
+        guard !Task.isCancelled, loadID == id else { return }
+        items = result?.items ?? items
+        if let progress {
+            resumingIDs = Set((progress.items ?? []).flatMap { item in
+                [item.id, item.seriesId].compactMap { $0 }
+            })
+        }
         loaded = true
     }
 }
@@ -1123,7 +1103,23 @@ struct SearchView: View {
     @State private var choice: VersionChoice?
     @State private var term = ""
     @State private var results: [Item] = []
-    @State private var searching = false
+    @State private var channelResults: [Item] = []
+    @State private var searchedTerm = ""
+    @State private var hints: [Hint] = []
+    @State private var hintedTerm = ""
+    @State private var chosenTerm = ""
+
+    private struct Hint: Decodable {
+        let name: String?
+        let productionYear: Int?
+    }
+
+    private struct HintResult: Decodable {
+        let searchHints: [Hint]
+    }
+
+    private var query: String { term.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var searching: Bool { query.count >= 2 && query != searchedTerm }
     /// How far in from the left the search keeps its content, which the grid keyboard makes wide.
     @State private var leadingInset: CGFloat = 0
 
@@ -1139,16 +1135,20 @@ struct SearchView: View {
         }
         .searchable(text: $term, prompt: L("Movies, shows and channels"))
         .playFlow($choice)
-        .task(id: term) { await search() }
+        .task(id: query) { await search(query) }
+        .task(id: query) { await suggest(query) }
     }
 
     private func grid(in edges: Edge.Set) -> some View {
         ScrollView {
-            // Live TV channels the search finds (server v2.38), which play rather than open a page.
-            let channels = results.filter(\.isChannel)
+            if hintedTerm == query, chosenTerm != query, !hints.isEmpty {
+                suggestions
+            }
+            let titles = searchedTerm == query ? results : []
+            let channels = searchedTerm == query ? channelResults : []
             if !channels.isEmpty {
                 VStack(alignment: .leading, spacing: Theme.px(8)) {
-                    Text(L("Channels")).font(Theme.font(Theme.xl, .semibold)).pagePadding()
+                    Text(L("Live TV")).font(Theme.font(Theme.xl, .semibold)).pagePadding()
                     ScrollView(.horizontal) {
                         LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                             ForEach(channels) { channel in
@@ -1165,11 +1165,11 @@ struct SearchView: View {
                 .focusSection()
             }
             if prefs.combineSearch {
-                PosterGrid(items: results.filter { !$0.isChannel })
+                PosterGrid(items: titles)
             } else {
                 // A section each, as the web app's search shows them unless they're combined.
-                let movies = results.filter { $0.type == "Movie" }
-                let shows = results.filter(\.isSeries)
+                let movies = titles.filter { $0.type == "Movie" }
+                let shows = titles.filter(\.isSeries)
                 VStack(alignment: .leading, spacing: Theme.px(8)) {
                     if !movies.isEmpty {
                         Text(L("Movies")).font(Theme.font(Theme.xl, .semibold)).pagePadding()
@@ -1182,7 +1182,7 @@ struct SearchView: View {
                 }
             }
             if searching { ProgressView() }
-            if !searching && term.count >= 2 && results.isEmpty {
+            if !searching && query.count >= 2 && titles.isEmpty && channels.isEmpty {
                 Text(L("No results for “%@”.", "\(term)")).font(Theme.font(Theme.base)).foregroundStyle(Theme.gray400)
             }
         }
@@ -1192,24 +1192,67 @@ struct SearchView: View {
         .ignoresSafeArea(edges: edges)
     }
 
-    private func search() async {
-        guard term.count >= 2 else {
+    private var suggestions: some View {
+        VStack(alignment: .leading, spacing: Theme.px(5)) {
+            Text(L("Suggestions")).font(Theme.font(Theme.sm, .semibold)).foregroundStyle(Theme.gray300)
+            ForEach(Array(hints.enumerated()), id: \.offset) { _, hint in
+                if let name = hint.name, !name.isEmpty {
+                    Button {
+                        chosenTerm = name
+                        term = name
+                    } label: {
+                        HStack(spacing: Theme.px(10)) {
+                            Label(name, systemImage: "magnifyingglass").lineLimit(1)
+                            if let year = hint.productionYear {
+                                Text(String(year)).foregroundStyle(Theme.gray400)
+                            }
+                        }
+                    }
+                    .buttonStyle(SoftPillStyle())
+                }
+            }
+        }
+        .pagePadding()
+        .focusSection()
+    }
+
+    private func suggest(_ query: String) async {
+        guard query.count >= 2, query != chosenTerm else { return }
+        try? await Task.sleep(for: .milliseconds(200))
+        guard !Task.isCancelled, let client = session.client, let userId = session.userId else { return }
+        let result: HintResult? = try? await client.get("/Search/Hints", [
+            "userId": userId, "SearchTerm": query, "IncludeItemTypes": "Movie,Series", "Limit": "5",
+        ])
+        guard !Task.isCancelled, self.query == query else { return }
+        hints = result?.searchHints ?? []
+        hintedTerm = query
+    }
+
+    private func search(_ query: String) async {
+        guard query.count >= 2 else {
             results = []
+            channelResults = []
+            searchedTerm = ""
+            chosenTerm = ""
             return
         }
-        // Waits for typing to pause.
+        if chosenTerm != query { chosenTerm = "" }
         try? await Task.sleep(for: .milliseconds(500))
         guard !Task.isCancelled, let client = session.client, let userId = session.userId else { return }
-        searching = true
-        defer { searching = false }
-        let result: ItemsResult? = try? await client.get("/Items", [
-            "userId": userId,
-            "SearchTerm": term,
-            "Recursive": "true",
-            "IncludeItemTypes": "Movie,Series,TvChannel",
-            "Limit": "48",
-        ])
-        if !Task.isCancelled { results = result?.items ?? [] }
+        let parameters: [String: String?] = [
+            "userId": userId, "SearchTerm": query, "Recursive": "true", "Limit": "48",
+        ]
+        async let titles: ItemsResult? = try? client.get("/Items", parameters.merging(["IncludeItemTypes": "Movie,Series"]) { _, next in next })
+        async let channels: ItemsResult? = try? client.get("/Items", parameters.merging(["IncludeItemTypes": "TvChannel"]) { _, next in next })
+        let (foundTitles, foundChannels) = await (titles, channels)
+        guard !Task.isCancelled, self.query == query else { return }
+        let live = (foundChannels?.items ?? []).filter(\.isChannel)
+        let liveIDs = Set(live.map(\.id))
+        results = (foundTitles?.items ?? []).filter {
+            ($0.type == "Movie" || $0.isSeries) && $0.channelId == nil && !liveIDs.contains($0.id)
+        }
+        channelResults = live
+        searchedTerm = query
     }
 }
 
@@ -1252,7 +1295,7 @@ enum ItemFilter: String, CaseIterable {
         case .unplayed: return L("Unwatched")
         case .resumable: return L("In progress")
         case .played: return L("Watched")
-        case .favorite: return L("Favourites")
+        case .favorite: return L("Favorites")
         }
     }
 

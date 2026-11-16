@@ -17,7 +17,7 @@ enum Place: String, CaseIterable, Identifiable {
         case .discover: return L("Discover")
         case .live: return L("Live TV")
         case .search: return L("Search")
-        case .favourites: return L("Favourites")
+        case .favourites: return L("Favorites")
         case .playlists: return L("Playlists")
         case .together: return L("Watch together")
         case .calendar: return L("Calendar")

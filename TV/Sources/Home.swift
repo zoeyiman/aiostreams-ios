@@ -110,9 +110,9 @@ struct HomeView: View {
                 Color.clear.frame(height: Theme.px(16))
             }
             if !resuming.isEmpty {
-                WideRow(title: L("Continue watching"), items: Array(resuming.prefix(24)), continueWatching: true, play: playFromContinueWatching) {
-                    RowBrowseArrow(title: L("Continue watching"), route: .rowResults(title: L("Continue watching"), items: resuming, wide: true))
-                }
+                WideRow(title: L("Continue watching"), items: Array(resuming.prefix(24)), continueWatching: true,
+                        browseRoute: .rowResults(title: L("Continue watching"), items: resuming, wide: true),
+                        play: playFromContinueWatching)
                     .environment(\.cardFocused, { _ in })
             }
             ForEach(catalogs) { row in
@@ -576,51 +576,36 @@ struct HeroMeta: View {
 // MARK: - Rows
 
 /// What's under way, as stills that play from the row: the web app's EpisodeRow.
-struct WideRow<Action: View>: View {
-    @Environment(\.layoutDirection) private var layoutDirection
-    @State private var rowScroll = MediaRowScroll()
-    @State private var browsedTarget: MediaRowTarget?
+struct WideRow: View {
     let title: String
     let items: [Item]
     /// Cards with the day each airs, and how long until then.
     var upcoming = false
     var continueWatching = false
+    let browseRoute: Route
     let play: (Item) -> Void
-    @ViewBuilder let action: () -> Action
 
     var body: some View {
-        let targets = items.map { MediaRowTarget.item($0.id) }
+        let targets = items.map { MediaRowTarget.item($0.id) } + [.more]
         return ScrollViewReader { scroller in
             VStack(alignment: .leading, spacing: Theme.px(12)) {
-                HStack {
-                    Text(title).font(Theme.font(Theme.xl, .semibold))
-                    Spacer()
-                    action()
-                    MediaRowArrows(scroll: rowScroll, stride: WideCard.size.width + Theme.px(16), targets: targets) { target in
-                        browsedTarget = target
-                        let width = WideCard.size.width
-                        let leading = min(1, pageInset / max(1, rowScroll.viewportWidth - width))
-                        let anchor = UnitPoint(x: layoutDirection == .rightToLeft ? 1 - leading : leading, y: 0.5)
-                        scroller.scrollTo(target, anchor: anchor)
-                    }
-                }
-                .pagePadding()
-                .focusSection()
+                Text(title)
+                    .font(Theme.font(Theme.xl, .semibold))
+                    .pagePadding()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                         ForEach(items) { item in
                             WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
                                 .id(MediaRowTarget.item(item.id))
                         }
+                        SeeAllCard(title: title, route: browseRoute, wide: true)
+                            .id(MediaRowTarget.more)
                     }
                     .pagePadding()
                     .padding(.vertical, Theme.px(8))
                 }
                 .edgeToEdge()
-                .onScrollGeometryChange(for: MediaRowScroll.self) {
-                    MediaRowScroll($0, rightToLeft: layoutDirection == .rightToLeft)
-                } action: { _, scroll in rowScroll = scroll }
-                .modifier(MediaRowFocus(targets: targets, browsedTarget: browsedTarget) { scroller.scrollTo($0) })
+                .modifier(MediaRowFocus(targets: targets) { scroller.scrollTo($0) })
             }
         }
         .focusSection()
