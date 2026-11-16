@@ -195,9 +195,7 @@ struct ItemRow: View {
                     } else if row.library?.collectionType == "tvshows" {
                         Text(L("Shows")).foregroundStyle(Theme.gray400)
                     }
-                    RowBrowseArrow(title: row.title, route: browseRoute, firstItemID: cards.first?.id) { id in
-                        scroller.scrollTo(MediaRowTarget.item(id), anchor: .leading)
-                    }
+                    RowBrowseArrow(title: row.title, route: browseRoute, firstItemID: cards.first?.id)
                 }
                 .pagePadding()
                 .focusSection()
@@ -243,7 +241,6 @@ struct RowBrowseArrow: View {
     let title: String
     let route: Route
     var firstItemID: String?
-    var revealFirst: ((String) -> Void)?
     @Environment(\.mediaRowFocus) private var rowFocus
 
     var body: some View {
@@ -257,7 +254,6 @@ struct RowBrowseArrow: View {
         .modifier(MediaRowCardFocus(target: .browse))
         .onMoveCommand { direction in
             guard direction == .down, let firstItemID else { return }
-            revealFirst?(firstItemID)
             rowFocus?.wrappedValue = .item(firstItemID)
         }
     }
@@ -298,6 +294,7 @@ struct PosterLink: View {
     var showsTitle = false
     var portrait = false
     var gridWidth: CGFloat?
+    var gridFocus: FocusState<String?>.Binding?
     var showsEpisodeProgress = false
     var previewViewport: Namespace.ID?
     var revealPreview: ((CGRect) -> Bool)?
@@ -311,6 +308,7 @@ struct PosterLink: View {
 
     private var hasCardFocus: Bool {
         if let rowFocus { return rowFocus.wrappedValue == .item(item.id) }
+        if let gridFocus { return gridFocus.wrappedValue == item.id }
         return focused
     }
 
@@ -381,7 +379,8 @@ struct PosterLink: View {
             }
             .buttonStyle(CardStyle())
             .focusEffectDisabled()
-            .modifier(MediaRowCardFocus(target: .item(item.id), local: $focused))
+            .modifier(MediaRowCardFocus(target: .item(item.id), local: gridFocus == nil ? $focused : nil))
+            .modifier(GridTitleFocus(binding: gridFocus, id: item.id))
             .onChange(of: hasCardFocus) { _, on in
                 if on { cardFocused(item) }
                 if !on {
@@ -526,6 +525,7 @@ struct PosterGrid: View {
     var compact = false
     var episodeDetails = false
     var columns: Int?
+    var focusedItem: FocusState<String?>.Binding?
 
     private let gap = Theme.px(16)
     private var preferredWidth: CGFloat {
@@ -546,7 +546,7 @@ struct PosterGrid: View {
         ) {
             ForEach(items) { item in
                 PosterLink(item: item, wide: wide, showsTitle: wide && !episodeDetails, portrait: !wide, gridWidth: cardWidth,
-                           showsEpisodeProgress: episodeDetails)
+                           gridFocus: focusedItem, showsEpisodeProgress: episodeDetails)
                     .onAppear { if item.id == items.last?.id { onLast?() } }
             }
         }
@@ -557,92 +557,46 @@ struct PosterGrid: View {
     }
 }
 
+private struct GridTitleFocus: ViewModifier {
+    let binding: FocusState<String?>.Binding?
+    let id: String
+
+    func body(content: Content) -> some View {
+        if let binding {
+            content.focused(binding, equals: id)
+        } else {
+            content
+        }
+    }
+}
+
 // MARK: - Discover
 
 struct DiscoverView: View {
     @EnvironmentObject private var session: Session
-    @State private var movies: [Item] = []
-    @State private var shows: [Item] = []
+    @State private var picks: [Item] = []
     @State private var loading = false
     @State private var loaded = false
     @State private var message: String?
-
-    @State private var showSeries = false
     var entryRequest = 0
-    @FocusState private var focusMovies: Bool
-    @State private var genre: String?
-
-    private var genres: [String] {
-        let titles = showSeries ? shows : movies
-        var seen = Set<String>()
-        return titles.flatMap { $0.genres ?? [] }
-            .filter { seen.insert($0.lowercased()).inserted }
-            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-    }
+    @FocusState private var focusedTitle: String?
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Theme.px(14)) {
-                HStack {
-                    Text(L("Discover")).font(Theme.font(Theme.xl3, .bold))
-                    Spacer()
-                    NavigationLink {
-                        LibrariesView()
-                    } label: {
-                        Label(L("Browse libraries"), systemImage: "rectangle.grid.2x2")
-                    }
-                    .buttonStyle(SoftPillStyle())
-                }
-                .pagePadding()
-                .padding(.top, pageTop)
-                HStack(spacing: Theme.px(8)) {
-                    Button(L("Movies")) { showSeries = false; genre = nil }
-                        .buttonStyle(SoftPillStyle(selected: !showSeries))
-                        .focused($focusMovies)
-                    Button(L("TV Shows")) { showSeries = true; genre = nil }
-                        .buttonStyle(SoftPillStyle(selected: showSeries))
-                }
-                .pagePadding()
-                .focusSection()
-                ScrollView(.horizontal) {
-                    HStack(spacing: Theme.px(8)) {
-                        Button(L("All genres")) { genre = nil }.buttonStyle(SoftPillStyle(selected: genre == nil))
-                        ForEach(genres, id: \.self) { name in
-                            Button(name) { genre = name }.buttonStyle(SoftPillStyle(selected: genre == name))
-                        }
-                    }
-                    .pagePadding()
-                    .padding(.vertical, Theme.px(6))
-                }
-                .focusSection()
-
-                recommendations
+            PageTitle(text: L("For you"))
+            if !picks.isEmpty {
+                PosterGrid(items: picks, columns: 6, focusedItem: $focusedTitle)
+            } else if !loaded {
+                ProgressView().pagePadding()
+            } else if let message {
+                Text(message).foregroundStyle(Theme.gray400).pagePadding()
             }
-            .padding(.bottom, Theme.px(44))
         }
         .scrollClipDisabled(false)
-        .onChange(of: entryRequest) { _, _ in focusMovies = true }
+        .onChange(of: entryRequest) { _, _ in focusedTitle = picks.first?.id }
         .task { await load() }
         .refreshOnReturn { await load() }
         .reloadOnWatchChange { await load() }
-    }
-
-    @ViewBuilder private var recommendations: some View {
-        let titles = showSeries ? shows : movies
-        let picks = titles.filter { item in
-            guard let genre else { return true }
-            return item.genres?.contains { $0.caseInsensitiveCompare(genre) == .orderedSame } == true
-        }
-        if !picks.isEmpty {
-            Text(genre ?? (showSeries ? L("Shows for you") : L("Movies for you")))
-                .font(Theme.font(Theme.xl, .semibold)).pagePadding()
-            PosterGrid(items: picks, columns: 6)
-        } else if loading && !loaded {
-            ProgressView().pagePadding()
-        } else if loaded {
-            Text(message ?? L("No recommendations in this category yet."))
-                .foregroundStyle(Theme.gray400).pagePadding()
-        }
     }
 
     private func load() async {
@@ -659,18 +613,19 @@ struct DiscoverView: View {
             "Filters": "IsPlayed", "SortBy": "DatePlayed", "SortOrder": "Descending", "Limit": "48", "Fields": "Genres",
         ])
         async let watchlist = loadWatchlist(client, userId: userId)
-        let (favouriteResult, watchedResult, savedItems) = await (favourites, watched, watchlist)
+        async let history: HistoryPage? = try? client.get("/AIOStreams/History", ["userId": userId, "limit": "120"])
+        let (favouriteResult, watchedResult, savedItems, recentHistory) = await (favourites, watched, watchlist, history)
         guard !Task.isCancelled else { return }
         let favouriteItems = favouriteResult?.items ?? []
-        let watchedItems = watchedResult?.items ?? []
+        let completed = (recentHistory?.items ?? []).filter { $0.played == true }.map(\.item)
+        let watchedItems = completed + (watchedResult?.items ?? [])
         let favouriteIDs = seedIDs(favouriteItems)
         let watchedIDs = seedIDs(watchedItems)
         let savedIDs = seedIDs(savedItems)
         var seen = Set<String>()
-        let seeds = zip(favouriteIDs.prefix(6), watchedIDs.prefix(6)).flatMap { [$0.0, $0.1] }
-            + Array(savedIDs.prefix(6)) + Array(favouriteIDs.prefix(6)) + Array(watchedIDs.prefix(6))
+        let seeds = Array(watchedIDs.prefix(16)) + Array(savedIDs.prefix(8)) + Array(favouriteIDs.prefix(4))
         let unique = seeds.filter { seen.insert($0).inserted }
-        let suggestions = await withTaskGroup(of: (Int, ItemsResult?).self) { group in
+        var suggestions = await withTaskGroup(of: (Int, ItemsResult?).self) { group in
             for (index, id) in unique.enumerated() {
                 group.addTask {
                     let result: ItemsResult? = try? await client.get("/Items/\(id)/Similar", [
@@ -686,18 +641,6 @@ struct DiscoverView: View {
             return ordered.keys.sorted().compactMap { ordered[$0] }
         }
         guard !Task.isCancelled else { return }
-        seen.formUnion(favouriteIDs + watchedIDs + savedIDs)
-        var picks: [Item] = []
-        // Interleave results so any one favourite or watched title doesn't dominate the rows.
-        for index in 0..<(suggestions.map(\.count).max() ?? 0) {
-            for list in suggestions where index < list.count {
-                let item = list[index]
-                guard item.type == "Movie" || item.isSeries, item.userData?.played != true,
-                      item.userData?.isFavorite != true, item.userData?.likes != false,
-                      item.resumeMs == nil, seen.insert(item.id).inserted else { continue }
-                picks.append(item)
-            }
-        }
         // Watched episodes can omit genres. Their series is the recommendation seed.
         let genreSeedIDs = Set(watchedItems.filter(\.isEpisode).compactMap(\.seriesId))
         let series: ItemsResult? = genreSeedIDs.isEmpty ? nil : try? await client.get("/Items", [
@@ -706,25 +649,58 @@ struct DiscoverView: View {
         guard !Task.isCancelled else { return }
         var genreWeights: [String: Int] = [:]
         var genreSeeds = Set<String>()
-        let tasteItems = favouriteItems + savedItems + watchedItems.filter { !$0.isEpisode } + (series?.items ?? [])
+        let tasteItems = watchedItems.filter { !$0.isEpisode } + (series?.items ?? []) + savedItems + favouriteItems
+        let historyIDs = Set(watchedIDs)
         for item in tasteItems where genreSeeds.insert(item.id).inserted {
             for genre in item.genres ?? [] {
-                genreWeights[genre.lowercased(), default: 0] += 1
+                genreWeights[genre.lowercased(), default: 0] += historyIDs.contains(item.id) ? 3 : 1
+            }
+        }
+        // Add unseen titles from the viewer's strongest watched genres alongside similar-title results.
+        let genres = genreWeights.keys.sorted {
+            if genreWeights[$0] == genreWeights[$1] { return $0 < $1 }
+            return genreWeights[$0, default: 0] > genreWeights[$1, default: 0]
+        }
+        for genre in genres.prefix(4) {
+            let matches: ItemsResult? = try? await client.get("/Items", [
+                "userId": userId, "Recursive": "true", "IncludeItemTypes": "Movie,Series",
+                "Genres": genre, "Filters": "IsUnplayed", "Limit": "28",
+                "SortBy": "CommunityRating", "SortOrder": "Descending", "Fields": "Genres",
+            ])
+            guard !Task.isCancelled else { return }
+            if let items = matches?.items, !items.isEmpty { suggestions.append(items) }
+        }
+        seen.formUnion(favouriteIDs + watchedIDs + savedIDs)
+        var candidates: [Item] = []
+        // Interleave results so any one favourite or watched title doesn't dominate the rows.
+        for index in 0..<(suggestions.map(\.count).max() ?? 0) {
+            for list in suggestions where index < list.count {
+                let item = list[index]
+                guard item.type == "Movie" || item.isSeries, item.userData?.played != true,
+                      item.userData?.isFavorite != true, item.userData?.likes != false,
+                      item.resumeMs == nil, seen.insert(item.id).inserted else { continue }
+                candidates.append(item)
             }
         }
         func tasteScore(_ item: Item) -> Int {
             (item.genres ?? []).reduce(0) { $0 + genreWeights[$1.lowercased(), default: 0] }
         }
-        let scores = picks.map { tasteScore($0) }
-        let rankedIndices = picks.indices.sorted { left, right in
+        let scores = candidates.map { tasteScore($0) }
+        let rankedIndices = candidates.indices.sorted { left, right in
             if scores[left] == scores[right] { return left < right }
             return scores[left] > scores[right]
         }
-        let rankedPicks = rankedIndices.map { picks[$0] }
-        movies = rankedPicks.filter { $0.type == "Movie" }
-        shows = rankedPicks.filter(\.isSeries)
+        let ranked = rankedIndices.map { candidates[$0] }
+        let movies = ranked.filter { $0.type == "Movie" }
+        let shows = ranked.filter(\.isSeries)
+        let pairs = zip(movies, shows).flatMap { [$0.0, $0.1] }
+        let paired = min(movies.count, shows.count)
+        var mixed = pairs
+        mixed.append(contentsOf: movies.dropFirst(paired))
+        mixed.append(contentsOf: shows.dropFirst(paired))
+        picks = Array(mixed.prefix(84))
         loaded = true
-        if movies.isEmpty && shows.isEmpty {
+        if picks.isEmpty {
             if (favouriteResult == nil && watchedResult == nil && savedItems.isEmpty) || (!unique.isEmpty && suggestions.isEmpty) {
                 message = L("Recommendations could not be loaded from this server.")
             } else if unique.isEmpty {
@@ -1260,6 +1236,7 @@ struct SearchView: View {
         // ignoring that inset or drawing past the scroll view put results behind it. The grid
         // keyboard takes the left instead, so then only the right is ignored.
         .ignoresSafeArea(edges: edges)
+        .padding(.leading, Theme.px(12))
     }
 
     private func titleRow(_ heading: String, items: [Item]) -> some View {

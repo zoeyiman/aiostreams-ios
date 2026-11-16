@@ -1209,6 +1209,7 @@ private struct PlayerPanelView: View {
     let panel: PlayerPanel
     let done: () -> Void
     @Namespace private var menuFocus
+    @Environment(\.resetFocus) private var resetFocus
     @EnvironmentObject private var prefs: Preferences
     /// Subtitles in other languages, which List only my languages keeps under More languages.
     @State private var allLanguages = false
@@ -1307,6 +1308,11 @@ private struct PlayerPanelView: View {
         .frame(maxWidth: .infinity, alignment: .trailing)
         .focusScope(menuFocus)
         .focusSection()
+        .task(id: panel) {
+            guard panel == .audio || panel == .tracks else { return }
+            await Task.yield()
+            resetFocus(in: menuFocus)
+        }
         .onExitCommand(perform: done)
     }
 
@@ -1316,7 +1322,7 @@ private struct PlayerPanelView: View {
                 switch panel {
                 case .tracks:
                     group(nil) {
-                        row(L("Off"), on: model.activeSubtitle == nil) { model.selectSubtitle(nil) }
+                        row(L("Off"), on: model.activeSubtitle == nil, initialFocus: true) { model.selectSubtitle(nil) }
                         ForEach(listedSubtitles) { track in
                             row(label(track), on: track.id == model.activeSubtitle) { model.selectSubtitle(track.id) }
                         }
@@ -1334,7 +1340,8 @@ private struct PlayerPanelView: View {
                                 .focusable()
                         }
                         ForEach(model.audioTracks) { track in
-                            row(label(track), detail: audioDetail(track), on: track.id == model.activeAudio) {
+                            row(label(track), detail: audioDetail(track), on: track.id == model.activeAudio,
+                                initialFocus: track.id == model.audioTracks.first?.id) {
                                 model.selectAudio(track.id)
                             }
                         }
@@ -1389,7 +1396,7 @@ private struct PlayerPanelView: View {
         }
     }
 
-    private func row(_ text: String, detail: String? = nil, on: Bool, action: @escaping () -> Void) -> some View {
+    private func row(_ text: String, detail: String? = nil, on: Bool, initialFocus: Bool? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: Theme.px(10)) {
                 Text(text).font(Theme.font(15)).lineLimit(1)
@@ -1407,7 +1414,7 @@ private struct PlayerPanelView: View {
         }
         .buttonStyle(PanelRowStyle())
         .accessibilityAddTraits(on ? .isSelected : [])
-        .prefersDefaultFocus(on, in: menuFocus)
+        .prefersDefaultFocus(initialFocus ?? (on && panel != .tracks), in: menuFocus)
     }
 
     /// What tells audio tracks apart besides their language: the format, channels, Atmos or DTS:X,

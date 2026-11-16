@@ -459,17 +459,15 @@ struct SettingsView: View {
     @FocusState private var tab: SettingsPage?
     @FocusState private var focusedSetting: String?
     @State private var opener: String?
+    @State private var categoryReturn = 0
+    @State private var optionReturn = 0
 
     private var showingOptions: Bool { chooser != nil || picker != nil }
 
     private func dismissOptions() {
         chooser = nil
         picker = nil
-        let row = opener
-        Task { @MainActor in
-            await Task.yield()
-            focusedSetting = row
-        }
+        optionReturn &+= 1
     }
 
     /// You in the navigation opens Account; Settings opens Playback.
@@ -501,24 +499,38 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: Theme.px(18)) {
                 Text(L("Settings")).font(Theme.font(Theme.xl, .semibold))
                     .padding(.leading, Theme.px(12))
-                tabs
+                ScrollViewReader { scroll in
+                    ScrollView { tabs }
+                        .scrollClipDisabled(false)
+                        .onChange(of: categoryReturn) { _, _ in
+                            scroll.scrollTo(page, anchor: .center)
+                            tab = page
+                        }
+                }
             }
             .frame(width: Theme.px(232), alignment: .leading)
             .disabled(showingOptions)
             ZStack(alignment: .topLeading) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Theme.px(22)) {
-                        header(page)
-                        pageContent(page)
+                ScrollViewReader { scroll in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: Theme.px(22)) {
+                            header(page)
+                            pageContent(page)
+                        }
+                        .padding(.bottom, Theme.px(42))
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.bottom, Theme.px(42))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .id(page)
+                    .focusSection()
+                    .disabled(showingOptions)
+                    .opacity(showingOptions ? 0 : 1)
+                    .accessibilityHidden(showingOptions)
+                    .onChange(of: optionReturn) { _, _ in
+                        guard !showingOptions, let opener else { return }
+                        scroll.scrollTo(opener, anchor: .center)
+                        focusedSetting = opener
+                    }
                 }
-                .id(page)
-                .focusSection()
-                .disabled(showingOptions)
-                .opacity(showingOptions ? 0 : 1)
-                .accessibilityHidden(showingOptions)
                 if let chooser {
                     ChooserPanel(chooser: chooser, done: dismissOptions)
                 } else if let picker {
@@ -544,7 +556,7 @@ struct SettingsView: View {
         if showingOptions { return dismissOptions }
         // Once focus is in the category list, the shell can move it to the active Settings tab.
         if tab != nil { return closeSettings }
-        return { tab = page }
+        return { categoryReturn &+= 1 }
     }
 
     @ViewBuilder private func pageContent(_ page: SettingsPage) -> some View {
@@ -835,7 +847,6 @@ struct SettingsView: View {
             tabGroup(L("App"), SettingsPage.allCases.filter { !$0.watching })
         }
         .focusSection()
-        .onChange(of: tab) { _, focused in if let focused { page = focused } }
     }
 
     private func tabGroup(_ title: String, _ pages: [SettingsPage]) -> some View {
@@ -859,6 +870,7 @@ struct SettingsView: View {
                     .frame(height: Theme.px(44))
                 }
                 .buttonStyle(SettingsTabStyle(selected: item == page))
+                .id(item)
                 .focused($tab, equals: item)
                 .prefersDefaultFocus(item == page, in: settingsScope)
             }
@@ -931,6 +943,7 @@ struct SettingsView: View {
             .frame(minHeight: Theme.px(52))
         }
         .buttonStyle(TVSettingsRowStyle())
+        .id(title)
         .focused($focusedSetting, equals: title)
     }
 
@@ -1007,13 +1020,23 @@ struct SettingsView: View {
         Button {
             guard let neighbor, let start = prefs.sidebarOrder.firstIndex(of: place),
                   let end = prefs.sidebarOrder.firstIndex(of: neighbor) else { return }
+            let target = tabOrderFocusID(place, earlier: earlier)
             prefs.moveSidebarTab(place, by: end - start)
+            Task { @MainActor in
+                await Task.yield()
+                focusedSetting = target
+            }
         } label: {
             Image(systemName: earlier ? "chevron.up" : "chevron.down")
         }
         .buttonStyle(CircleIconStyle())
-        .disabled(neighbor == nil)
+        .focused($focusedSetting, equals: tabOrderFocusID(place, earlier: earlier))
+        .opacity(neighbor == nil ? 0.43 : 1)
         .accessibilityLabel(earlier ? L("Move %@ earlier", place.name) : L("Move %@ later", place.name))
+    }
+
+    private func tabOrderFocusID(_ place: Place, earlier: Bool) -> String {
+        "tab-order-\(place.rawValue)-\(earlier)"
     }
 
     private func editSidebarTab(_ place: Place, hidden: Bool) {

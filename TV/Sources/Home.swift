@@ -585,30 +585,26 @@ struct WideRow: View {
     let play: (Item) -> Void
 
     var body: some View {
-        ScrollViewReader { scroller in
-            VStack(alignment: .leading, spacing: Theme.px(12)) {
-                HStack(spacing: Theme.px(8)) {
-                    Text(title).font(Theme.font(Theme.xl, .semibold))
-                    RowBrowseArrow(title: title, route: browseRoute, firstItemID: items.first?.id) { id in
-                        scroller.scrollTo(MediaRowTarget.item(id), anchor: .leading)
+        VStack(alignment: .leading, spacing: Theme.px(12)) {
+            HStack(spacing: Theme.px(8)) {
+                Text(title).font(Theme.font(Theme.xl, .semibold))
+                RowBrowseArrow(title: title, route: browseRoute, firstItemID: items.first?.id)
+            }
+            .pagePadding()
+            .focusSection()
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                    ForEach(items) { item in
+                        WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
+                            .id(MediaRowTarget.item(item.id))
                     }
                 }
                 .pagePadding()
-                .focusSection()
-                ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                        ForEach(items) { item in
-                            WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
-                                .id(MediaRowTarget.item(item.id))
-                        }
-                    }
-                    .pagePadding()
-                    .padding(.vertical, Theme.px(8))
-                }
-                .edgeToEdge()
+                .padding(.vertical, Theme.px(8))
             }
-            .modifier(MediaRowFocus())
+            .edgeToEdge()
         }
+        .modifier(MediaRowFocus())
         .focusSection()
     }
 }

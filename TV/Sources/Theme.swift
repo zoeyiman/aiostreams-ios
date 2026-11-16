@@ -181,7 +181,11 @@ struct CardStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         Focused { focused in
             configuration.label
-                .scaleEffect(focused ? 1.025 : 1)
+                .overlay {
+                    RoundedRectangle(cornerRadius: radius)
+                        .strokeBorder(.white.opacity(focused ? 0.95 : 0), lineWidth: Theme.px(3))
+                        .allowsHitTesting(false)
+                }
                 .focusEffectDisabled()
         }
     }

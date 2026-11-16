@@ -405,7 +405,8 @@ struct MainView: View {
             select(item)
             if item != .account { leaveRail() }
         } label: {
-            TopTab(item: item, current: item == place, named: named, avatar: avatarURL)
+            TopTab(item: item, current: item == place, named: named, avatar: avatarURL,
+                   showsFocus: place != .settings || item == .settings || item == .account)
         }
         .buttonStyle(RailButtonStyle())
         .focused($railFocus, equals: item)
@@ -560,6 +561,9 @@ private struct TopTab: View {
     let current: Bool
     var named = true
     let avatar: URL?
+    var showsFocus = true
+
+    private var highlighted: Bool { focused && showsFocus }
 
     var body: some View {
         HStack(spacing: Theme.px(8)) {
@@ -575,7 +579,7 @@ private struct TopTab: View {
                 .clipShape(Circle())
             } else {
                 Image(systemName: item.icon)
-                    .font(.system(size: Theme.px(14), weight: current || focused ? .semibold : .regular))
+                    .font(.system(size: Theme.px(14), weight: current || highlighted ? .semibold : .regular))
                     .frame(width: Theme.px(18))
                 if item != .settings && named {
                     Text(item.name).font(Theme.font(Theme.sm, .medium)).lineLimit(1).fixedSize()
@@ -584,8 +588,8 @@ private struct TopTab: View {
         }
         .padding(.horizontal, item == .account || item == .settings || !named ? Theme.px(10) : Theme.px(12))
         .frame(height: Theme.px(36))
-        .foregroundStyle(focused ? Color.black : current ? Color.white : Theme.gray400)
-        .background(focused ? Color.white.opacity(0.94) : current ? Color.white.opacity(0.20) : Color.clear, in: Capsule())
+        .foregroundStyle(highlighted ? Color.black : current ? Color.white : Theme.gray400)
+        .background(highlighted ? Color.white.opacity(0.94) : current ? Color.white.opacity(0.20) : Color.clear, in: Capsule())
     }
 }
 

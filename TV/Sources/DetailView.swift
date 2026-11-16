@@ -50,19 +50,6 @@ struct DetailView: View {
             }
             .scrollClipDisabled(false)
         }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.backward")
-                    .font(Theme.font(Theme.sm, .semibold))
-                    .frame(width: Theme.px(38), height: Theme.px(36))
-            }
-            .buttonStyle(RowBrowseArrowStyle())
-            .accessibilityLabel(L("Back"))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .pagePadding()
-            .padding(.vertical, Theme.px(5))
-            .background(Theme.background.opacity(0.96))
-        }
         .onExitCommand { dismiss() }
         .task { await load() }
         // Find versions when a title opens: what Play would play, looked for straight away.
@@ -295,7 +282,7 @@ struct DetailView: View {
                     .pagePadding()
                     .padding(.vertical, Theme.px(8))
                 }
-                .edgeToEdge()
+                .scrollClipDisabled(false)
             }
             .focusSection()
         }
