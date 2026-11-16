@@ -929,9 +929,6 @@ private struct CollectionSegmentStyle: ButtonStyle {
 
 struct FavouritesView: View {
     @EnvironmentObject private var session: Session
-    /// The web app's favourites sorts, newest added first.
-    @State private var sort: SortKey = .added
-    @State private var descending = true
     @State private var items: [Item] = []
     @State private var loaded = false
     @State private var media: Media = .all
@@ -1003,7 +1000,6 @@ struct FavouritesView: View {
                 }
                 .pagePadding()
                 .focusSection()
-                SortFilterBar(filter: .constant(nil), sorts: [.added, .name, .released, .rating], sort: $sort, descending: $descending)
                 if loaded && filtered.isEmpty {
                     Text(items.isEmpty ? L("Titles you favorite show here.") : L("No favorites match these filters."))
                         .font(Theme.font(Theme.base))
@@ -1020,7 +1016,6 @@ struct FavouritesView: View {
         .task { await load() }
         .refreshOnReturn { await load() }
         .reloadOnWatchChange { await load() }
-        .onChange(of: "\(sort.rawValue)|\(descending)") { _, _ in Task { await load() } }
     }
 
     private func segments<Option: Hashable>(_ options: [Option], selection: Binding<Option>,
@@ -1053,8 +1048,8 @@ struct FavouritesView: View {
             "Filters": "IsFavorite",
             "Recursive": "true",
             "IncludeItemTypes": "Movie,Series,Episode",
-            "SortBy": sort.fields,
-            "SortOrder": descending ? "Descending" : "Ascending",
+            "SortBy": SortKey.added.fields,
+            "SortOrder": "Descending",
         ])
         let (result, progress) = await (favorites, resume)
         guard !Task.isCancelled, loadID == id else { return }
