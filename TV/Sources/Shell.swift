@@ -55,7 +55,7 @@ struct MainView: View {
     @State private var liveView: Item?
     @State private var paths: [Place: NavigationPath] = [:]
     @FocusState private var railFocus: Place?
-    @State private var discoverEntryRequest = 0
+    @State private var highlightedTopTab: Place?
     /// What a card's menu asked to play, from any page.
     @State private var choice: VersionChoice?
     @Namespace private var railScope
@@ -200,13 +200,19 @@ struct MainView: View {
             }
         }
         .onChange(of: railFocus) { previous, focused in
-            guard top, let focused else { return }
+            guard top, let focused else {
+                highlightedTopTab = nil
+                return
+            }
             // Like the web app's navigationBack, enter the bar at the current page.
             // A directional move within the bar can then switch pages.
             if previous == nil {
+                highlightedTopTab = place
                 if focused != place { railFocus = place }
                 return
             }
+            highlightedTopTab = focused
+            guard (paths[place]?.isEmpty ?? true), place != .settings else { return }
             if Place.main.contains(focused), focused != place {
                 place = focused
             }
@@ -248,7 +254,7 @@ struct MainView: View {
     @ViewBuilder private func page(_ place: Place) -> some View {
         switch place {
         case .home: HomeView()
-        case .discover: DiscoverView(entryRequest: discoverEntryRequest)
+        case .discover: DiscoverView()
         case .live:
             if let liveView { LiveTVView(view: liveView) } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         case .search: SearchView()
@@ -258,7 +264,7 @@ struct MainView: View {
         case .calendar: CalendarView()
         case .activity: ActivityView()
         case .account: SignInView()
-        case .settings: SettingsView(closeSettings: returnFromSettings)
+        case .settings: SettingsView(closeSettings: { railFocus = .settings })
         }
     }
 
@@ -406,15 +412,10 @@ struct MainView: View {
             if item != .account { leaveRail() }
         } label: {
             TopTab(item: item, current: item == place, named: named, avatar: avatarURL,
-                   showsFocus: place != .settings || item == .settings || item == .account)
+                   showsFocus: highlightedTopTab == item)
         }
         .buttonStyle(RailButtonStyle())
         .focused($railFocus, equals: item)
-        .onMoveCommand { direction in
-            if direction == .down, item == .discover, place == .discover {
-                discoverEntryRequest &+= 1
-            }
-        }
         .prefersDefaultFocus(item == place, in: topBarScope)
         .accessibilityLabel(item.name)
         .accessibilityAddTraits(item == place ? .isSelected : [])
@@ -459,6 +460,7 @@ struct MainView: View {
     /// Back first returns focus to the active tab. Only the Home tab can exit the app.
     private var exitAction: (() -> Void)? {
         guard paths[place]?.isEmpty ?? true else { return nil }
+        if place == .settings && railFocus == .settings { return returnFromSettings }
         if place != .home { return { railFocus = place } }
         if railFocus == nil { return { railFocus = place } }
         guard prefs.preventAccidentalExit, !exitArmed else { return nil }

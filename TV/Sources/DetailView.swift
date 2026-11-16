@@ -25,6 +25,7 @@ struct DetailView: View {
     @State private var pickingEpisode = false
     @State private var randomChoice: VersionChoice?
     @FocusState private var playFocused: Bool
+    @State private var returnToPlay = 0
 
     private var shown: Item { full ?? item }
 
@@ -34,21 +35,26 @@ struct DetailView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             ItemBackdrop(item: shown, overArtwork: prefs.flag("artBackground", false))
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.px(48)) {
-                    header
-                    if shown.isSeries { seasonsSection }
-                    castSection
-                    if !similar.isEmpty {
-                        ItemRow(row: HomeRow(id: "similar", title: L("More like this"), items: similar))
-                            .padding(.leading, Theme.px(12))
+            ScrollViewReader { scroll in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Theme.px(48)) {
+                        header.id("detail-heading")
+                        if shown.isSeries { seasonsSection }
+                        castSection
+                        if !similar.isEmpty {
+                            ItemRow(row: HomeRow(id: "similar", title: L("More like this"), items: similar))
+                        }
                     }
+                    // 26% down a 720-line screen.
+                    .padding(.top, Theme.px(187))
+                    .padding(.bottom, Theme.px(64))
                 }
-                // 26% down a 720-line screen.
-                .padding(.top, Theme.px(187))
-                .padding(.bottom, Theme.px(64))
+                .scrollClipDisabled(false)
+                .onChange(of: returnToPlay) { _, _ in
+                    scroll.scrollTo("detail-heading", anchor: .top)
+                    playFocused = true
+                }
             }
-            .scrollClipDisabled(false)
         }
         .onExitCommand { dismiss() }
         .task { await load() }
@@ -257,7 +263,7 @@ struct DetailView: View {
                 .pagePadding()
                 .padding(.vertical, Theme.px(8))
             }
-            .edgeToEdge()
+            .scrollClipDisabled(false)
             .focusSection()
         }
     }
@@ -285,6 +291,11 @@ struct DetailView: View {
                 .scrollClipDisabled(false)
             }
             .focusSection()
+            .onMoveCommand { direction in
+                if direction == .up && target != nil {
+                    returnToPlay &+= 1
+                }
+            }
         }
     }
 

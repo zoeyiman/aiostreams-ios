@@ -469,7 +469,6 @@ struct SettingsView: View {
     private func dismissOptions() {
         chooser = nil
         picker = nil
-        optionReturn &+= 1
     }
 
     /// You in the navigation opens Account; Settings opens Playback.
@@ -488,6 +487,21 @@ struct SettingsView: View {
             guard let client = session.client else { return }
             let enabled: Bool? = try? await client.get("/QuickConnect/Enabled")
             quickConnect = enabled == true
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { showingOptions },
+            set: { if !$0 { dismissOptions() } }
+        ), onDismiss: { optionReturn &+= 1 }) {
+            Group {
+                if let chooser {
+                    ChooserPanel(chooser: chooser, done: dismissOptions)
+                } else if let picker {
+                    MultiChooserPanel(chooser: picker, done: dismissOptions)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.background.ignoresSafeArea())
+            .environmentObject(prefs)
         }
         .fullScreenCover(isPresented: $approving) {
             QuickConnectApproval { approving = false }
@@ -524,19 +538,11 @@ struct SettingsView: View {
                     }
                     .id(page)
                     .focusSection()
-                    .disabled(showingOptions)
-                    .opacity(showingOptions ? 0 : 1)
-                    .accessibilityHidden(showingOptions)
                     .onChange(of: optionReturn) { _, _ in
                         guard !showingOptions, let opener else { return }
                         scroll.scrollTo(opener, anchor: .center)
                         focusedSetting = opener
                     }
-                }
-                if let chooser {
-                    ChooserPanel(chooser: chooser, done: dismissOptions)
-                } else if let picker {
-                    MultiChooserPanel(chooser: picker, done: dismissOptions)
                 }
             }
         }

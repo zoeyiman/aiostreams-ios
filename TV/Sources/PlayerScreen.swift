@@ -1209,7 +1209,7 @@ private struct PlayerPanelView: View {
     let panel: PlayerPanel
     let done: () -> Void
     @Namespace private var menuFocus
-    @Environment(\.resetFocus) private var resetFocus
+    @FocusState private var firstTrackFocused: Bool
     @EnvironmentObject private var prefs: Preferences
     /// Subtitles in other languages, which List only my languages keeps under More languages.
     @State private var allLanguages = false
@@ -1311,7 +1311,7 @@ private struct PlayerPanelView: View {
         .task(id: panel) {
             guard panel == .audio || panel == .tracks else { return }
             await Task.yield()
-            resetFocus(in: menuFocus)
+            firstTrackFocused = true
         }
         .onExitCommand(perform: done)
     }
@@ -1338,6 +1338,7 @@ private struct PlayerPanelView: View {
                                 .foregroundStyle(Theme.gray400)
                                 .padding(.horizontal, Theme.px(12))
                                 .focusable()
+                                .focused($firstTrackFocused)
                         }
                         ForEach(model.audioTracks) { track in
                             row(label(track), detail: audioDetail(track), on: track.id == model.activeAudio,
@@ -1414,6 +1415,7 @@ private struct PlayerPanelView: View {
         }
         .buttonStyle(PanelRowStyle())
         .accessibilityAddTraits(on ? .isSelected : [])
+        .modifier(InitialTrackFocus(binding: initialFocus == true ? $firstTrackFocused : nil))
         .prefersDefaultFocus(initialFocus ?? (on && panel != .tracks), in: menuFocus)
     }
 
@@ -1737,5 +1739,18 @@ private struct EpisodeDrawerRowStyle: ButtonStyle {
 private struct PlaybackPressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+    }
+}
+
+
+private struct InitialTrackFocus: ViewModifier {
+    let binding: FocusState<Bool>.Binding?
+
+    func body(content: Content) -> some View {
+        if let binding {
+            content.focused(binding)
+        } else {
+            content
+        }
     }
 }

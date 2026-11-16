@@ -130,7 +130,6 @@ struct HomeRow: Identifiable {
 }
 
 enum MediaRowTarget: Hashable {
-    case browse
     case item(String)
 }
 
@@ -187,6 +186,7 @@ struct ItemRow: View {
         ScrollViewReader { scroller in
             VStack(alignment: .leading, spacing: Theme.px(12)) {
                 HStack(spacing: Theme.px(8)) {
+                    RowBrowseArrow(title: row.title, route: browseRoute)
                     Text(row.title).font(Theme.font(Theme.xl, .semibold))
                     if row.collection || row.library?.collectionType == "boxsets" {
                         Text(L("Collections")).foregroundStyle(Theme.gray400)
@@ -195,7 +195,6 @@ struct ItemRow: View {
                     } else if row.library?.collectionType == "tvshows" {
                         Text(L("Shows")).foregroundStyle(Theme.gray400)
                     }
-                    RowBrowseArrow(title: row.title, route: browseRoute, firstItemID: cards.first?.id)
                 }
                 .pagePadding()
                 .focusSection()
@@ -240,8 +239,6 @@ struct ItemRow: View {
 struct RowBrowseArrow: View {
     let title: String
     let route: Route
-    var firstItemID: String?
-    @Environment(\.mediaRowFocus) private var rowFocus
 
     var body: some View {
         NavigationLink(value: route) {
@@ -251,11 +248,6 @@ struct RowBrowseArrow: View {
         }
         .buttonStyle(RowBrowseArrowStyle())
         .accessibilityLabel(L("See all: %@", title))
-        .modifier(MediaRowCardFocus(target: .browse))
-        .onMoveCommand { direction in
-            guard direction == .down, let firstItemID else { return }
-            rowFocus?.wrappedValue = .item(firstItemID)
-        }
     }
 }
 
@@ -294,7 +286,6 @@ struct PosterLink: View {
     var showsTitle = false
     var portrait = false
     var gridWidth: CGFloat?
-    var gridFocus: FocusState<String?>.Binding?
     var showsEpisodeProgress = false
     var previewViewport: Namespace.ID?
     var revealPreview: ((CGRect) -> Bool)?
@@ -308,7 +299,6 @@ struct PosterLink: View {
 
     private var hasCardFocus: Bool {
         if let rowFocus { return rowFocus.wrappedValue == .item(item.id) }
-        if let gridFocus { return gridFocus.wrappedValue == item.id }
         return focused
     }
 
@@ -379,8 +369,7 @@ struct PosterLink: View {
             }
             .buttonStyle(CardStyle())
             .focusEffectDisabled()
-            .modifier(MediaRowCardFocus(target: .item(item.id), local: gridFocus == nil ? $focused : nil))
-            .modifier(GridTitleFocus(binding: gridFocus, id: item.id))
+            .modifier(MediaRowCardFocus(target: .item(item.id), local: $focused))
             .onChange(of: hasCardFocus) { _, on in
                 if on { cardFocused(item) }
                 if !on {
@@ -525,7 +514,6 @@ struct PosterGrid: View {
     var compact = false
     var episodeDetails = false
     var columns: Int?
-    var focusedItem: FocusState<String?>.Binding?
 
     private let gap = Theme.px(16)
     private var preferredWidth: CGFloat {
@@ -546,7 +534,7 @@ struct PosterGrid: View {
         ) {
             ForEach(items) { item in
                 PosterLink(item: item, wide: wide, showsTitle: wide && !episodeDetails, portrait: !wide, gridWidth: cardWidth,
-                           gridFocus: focusedItem, showsEpisodeProgress: episodeDetails)
+                           showsEpisodeProgress: episodeDetails)
                     .onAppear { if item.id == items.last?.id { onLast?() } }
             }
         }
@@ -554,19 +542,6 @@ struct PosterGrid: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
         .pagePadding()
         .padding(.vertical, Theme.px(16))
-    }
-}
-
-private struct GridTitleFocus: ViewModifier {
-    let binding: FocusState<String?>.Binding?
-    let id: String
-
-    func body(content: Content) -> some View {
-        if let binding {
-            content.focused(binding, equals: id)
-        } else {
-            content
-        }
     }
 }
 
@@ -578,22 +553,51 @@ struct DiscoverView: View {
     @State private var loading = false
     @State private var loaded = false
     @State private var message: String?
-    var entryRequest = 0
-    @FocusState private var focusedTitle: String?
+    private enum Filter: CaseIterable {
+        case all, movies, shows
+
+        var title: String {
+            switch self {
+            case .all: return L("All")
+            case .movies: return L("Movies")
+            case .shows: return L("Shows")
+            }
+        }
+
+        func includes(_ item: Item) -> Bool {
+            switch self {
+            case .all: return true
+            case .movies: return item.type == "Movie"
+            case .shows: return item.isSeries
+            }
+        }
+    }
+
+    @State private var filter = Filter.all
 
     var body: some View {
         ScrollView {
             PageTitle(text: L("For you"))
-            if !picks.isEmpty {
-                PosterGrid(items: picks, columns: 6, focusedItem: $focusedTitle)
+            HStack(spacing: Theme.px(8)) {
+                ForEach(Filter.allCases, id: \.self) { option in
+                    Button(option.title) { filter = option }
+                        .buttonStyle(SoftPillStyle(selected: filter == option))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .pagePadding()
+            .focusSection()
+            let visible = picks.filter { filter.includes($0) }
+            if !visible.isEmpty {
+                PosterGrid(items: visible, columns: 6)
             } else if !loaded {
                 ProgressView().pagePadding()
-            } else if let message {
-                Text(message).foregroundStyle(Theme.gray400).pagePadding()
+            } else {
+                Text(message ?? L("No recommendations in this category yet."))
+                    .foregroundStyle(Theme.gray400).pagePadding()
             }
         }
         .scrollClipDisabled(false)
-        .onChange(of: entryRequest) { _, _ in focusedTitle = picks.first?.id }
         .task { await load() }
         .refreshOnReturn { await load() }
         .reloadOnWatchChange { await load() }
@@ -1127,10 +1131,7 @@ struct FavouritesView: View {
         guard let client = session.client, let userId = session.userId else { return }
         let id = UUID()
         loadID = id
-        async let resume: ItemsResult? = try? client.get("/UserItems/Resume", [
-            "userId": userId, "MediaTypes": "Video", "Limit": "250",
-        ])
-        async let favorites: ItemsResult? = try? client.get("/Items", [
+        let result: ItemsResult? = try? await client.get("/Items", [
             "userId": userId,
             "Filters": "IsFavorite",
             "Recursive": "true",
@@ -1138,15 +1139,19 @@ struct FavouritesView: View {
             "SortBy": SortKey.added.fields,
             "SortOrder": newestFirst ? "Descending" : "Ascending",
         ])
-        let (result, progress) = await (favorites, resume)
         guard !Task.isCancelled, loadID == id else { return }
         items = result?.items ?? items
+        loaded = true
+
+        let progress: ItemsResult? = try? await client.get("/UserItems/Resume", [
+            "userId": userId, "MediaTypes": "Video", "Limit": "250",
+        ])
+        guard !Task.isCancelled, loadID == id else { return }
         if let progress {
             resumingIDs = Set((progress.items ?? []).flatMap { item in
                 [item.id, item.seriesId].compactMap { $0 }
             })
         }
-        loaded = true
     }
 }
 
@@ -1236,7 +1241,7 @@ struct SearchView: View {
         // ignoring that inset or drawing past the scroll view put results behind it. The grid
         // keyboard takes the left instead, so then only the right is ignored.
         .ignoresSafeArea(edges: edges)
-        .padding(.leading, Theme.px(12))
+        .padding(.leading, Theme.px(5))
     }
 
     private func titleRow(_ heading: String, items: [Item]) -> some View {

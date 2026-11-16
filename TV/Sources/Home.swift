@@ -586,8 +586,8 @@ struct WideRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.px(12)) {
             HStack(spacing: Theme.px(8)) {
+                RowBrowseArrow(title: title, route: browseRoute)
                 Text(title).font(Theme.font(Theme.xl, .semibold))
-                RowBrowseArrow(title: title, route: browseRoute, firstItemID: items.first?.id)
             }
             .pagePadding()
             .focusSection()
