@@ -41,6 +41,8 @@ struct LiveTVView: View {
     @State private var now = Date()
     @State private var choice: VersionChoice?
     @State private var selectedID: String?
+    @State private var choosingGroup = false
+    @State private var groupSearch = ""
     @State private var previewRequest = UUID()
     @FocusState private var focusedChannel: String?
     @State private var fullScreenPlayer = false
@@ -61,7 +63,9 @@ struct LiveTVView: View {
         VStack(alignment: .leading, spacing: Theme.px(12)) {
             header.zIndex(1)
             controls.zIndex(1)
-            if showsGuide {
+            if choosingGroup {
+                groupPicker
+            } else if showsGuide {
                 GuideView(channels: channels, schedules: schedules, window: window, now: now, play: play,
                           playFromStart: { programme in
                               choice = VersionChoice(item: programme, startMs: 0, mode: .straight)
@@ -230,12 +234,33 @@ struct LiveTVView: View {
         .padding(.top, pageTop)
     }
 
+    private var providerGroups: [ChannelGroup] {
+        groups.filter { ![ChannelGroup.all, ChannelGroup.favourites, ChannelGroup.recent].contains($0.id) }
+    }
+
     private var controls: some View {
-        ScrollView(.horizontal) {
+        let providers = providerGroups
+        let usePicker = providers.count > 5 || providers.reduce(0, { $0 + $1.name.count }) > 65
+        let visible = usePicker ? groups.filter { !providers.contains($0) } : groups
+        let current = providers.first { $0.id == group }
+        return ScrollView(.horizontal) {
             HStack(spacing: Theme.px(8)) {
-                ForEach(groups) { item in
-                    Button(item.name) { choose(item.id) }
-                        .buttonStyle(SoftPillStyle(selected: item.id == group))
+                ForEach(visible) { item in
+                    Button(item.name) {
+                        choosingGroup = false
+                        choose(item.id)
+                    }
+                    .buttonStyle(SoftPillStyle(selected: item.id == group))
+                }
+                if usePicker {
+                    Button {
+                        groupSearch = ""
+                        choosingGroup.toggle()
+                    } label: {
+                        Label(current?.name ?? L("Groups"), systemImage: "line.3.horizontal.decrease")
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(SoftPillStyle(selected: current != nil || choosingGroup))
                 }
             }
             .padding(Theme.px(6))
@@ -246,7 +271,48 @@ struct LiveTVView: View {
         .focusSection()
     }
 
+    private var groupPicker: some View {
+        let search = groupSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = providerGroups.filter { search.isEmpty || $0.name.localizedStandardContains(search) }
+        return VStack(alignment: .leading, spacing: Theme.px(12)) {
+            HStack {
+                TextField(L("Search groups"), text: $groupSearch)
+                Button(L("Back")) { choosingGroup = false }
+                    .buttonStyle(SoftPillStyle())
+            }
+            .focusSection()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Theme.px(7)) {
+                    ForEach(matches) { item in
+                        Button {
+                            choosingGroup = false
+                            choose(item.id)
+                        } label: {
+                            HStack {
+                                Text(item.name)
+                                Spacer()
+                                if item.id == group { Image(systemName: "checkmark") }
+                            }
+                            .padding(Theme.px(12))
+                        }
+                        .buttonStyle(RowStyle())
+                    }
+                    if matches.isEmpty {
+                        Text(L("No matching groups.")).foregroundStyle(Theme.gray400)
+                    }
+                }
+                .padding(Theme.px(6))
+            }
+            .scrollClipDisabled(false)
+            .focusSection()
+        }
+        .frame(maxWidth: Theme.px(700), maxHeight: .infinity, alignment: .topLeading)
+        .pagePadding()
+        .onExitCommand { choosingGroup = false }
+    }
+
     private func setGuide(_ on: Bool) {
+        choosingGroup = false
         guide = on
         UserDefaults.standard.set(on ? "guide" : "channels", forKey: "live.view")
     }
