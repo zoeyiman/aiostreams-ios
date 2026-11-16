@@ -554,16 +554,20 @@ struct WideRow<Action: View>: View {
             }
             .pagePadding()
             .focusSection()
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                    ForEach(items) { item in
-                        WideCard(item: item, upcoming: upcoming) { play(item) }
+            ScrollViewReader { scroller in
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                        ForEach(items) { item in
+                            WideCard(item: item, upcoming: upcoming) { play(item) }
+                                .id(MediaRowTarget.item(item.id))
+                        }
                     }
+                    .pagePadding()
+                    .padding(.vertical, Theme.px(8))
                 }
-                .pagePadding()
-                .padding(.vertical, Theme.px(8))
+                .edgeToEdge()
+                .modifier(MediaRowFocus(targets: items.map { .item($0.id) }) { scroller.scrollTo($0) })
             }
-            .edgeToEdge()
         }
         .focusSection()
     }
@@ -574,15 +578,21 @@ struct WideCard: View {
     @Environment(\.cardFocused) private var cardFocused
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
+    @Environment(\.mediaRowFocus) private var rowFocus
     @FocusState private var focused: Bool
     let item: Item
     /// Not out yet: the air day over the still, and how long until it beside the name.
     var upcoming = false
     let action: () -> Void
 
+    private var hasCardFocus: Bool {
+        if let rowFocus { return rowFocus.wrappedValue == .item(item.id) }
+        return focused
+    }
+
     private var airs: Date? { upcoming ? parseDate(item.premiereDate) : nil }
     /// Spoiler blur: an episode not started, until it has focus.
-    private var hidden: Bool { prefs.blurSpoilers && item.unstarted && !focused }
+    private var hidden: Bool { prefs.blurSpoilers && item.unstarted && !hasCardFocus }
 
     static let size = CGSize(width: Theme.px(304), height: Theme.px(171))
 
@@ -618,8 +628,8 @@ struct WideCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous))
             }
             .buttonStyle(CardStyle())
-            .focused($focused)
-            .onChange(of: focused) { _, on in if on { cardFocused(item) } }
+            .modifier(MediaRowCardFocus(target: .item(item.id), local: $focused))
+            .onChange(of: hasCardFocus) { _, on in if on { cardFocused(item) } }
             .itemMenu(item)
             VStack(alignment: .leading, spacing: Theme.px(2)) {
                 HStack(alignment: .firstTextBaseline) {

@@ -129,12 +129,78 @@ struct HomeRow: Identifiable {
     var browseRoute: Route?
 }
 
+enum MediaRowTarget: Hashable {
+    case item(String)
+    case more
+}
+
+private struct MediaRowFocusKey: EnvironmentKey {
+    static let defaultValue: FocusState<MediaRowTarget?>.Binding? = nil
+}
+
+extension EnvironmentValues {
+    var mediaRowFocus: FocusState<MediaRowTarget?>.Binding? {
+        get { self[MediaRowFocusKey.self] }
+        set { self[MediaRowFocusKey.self] = newValue }
+    }
+}
+
+/// The native equivalent of AIOStreams' data-nav-resume row entry.
+struct MediaRowFocus: ViewModifier {
+    let targets: [MediaRowTarget]
+    let reveal: (MediaRowTarget) -> Void
+    @FocusState private var focused: MediaRowTarget?
+    @State private var remembered: MediaRowTarget?
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.mediaRowFocus, $focused)
+            .onChange(of: focused) { previous, current in
+                guard let current else { return }
+                // Moving within the row stays under the system's directional focus engine.
+                guard previous == nil else {
+                    remembered = current
+                    return
+                }
+                let entry = remembered.flatMap { targets.contains($0) ? $0 : nil } ?? targets.first
+                if let entry, entry != current {
+                    reveal(entry)
+                    focused = entry
+                } else {
+                    remembered = current
+                }
+            }
+    }
+}
+
+struct MediaRowCardFocus: ViewModifier {
+    @Environment(\.mediaRowFocus) private var rowFocus
+    let target: MediaRowTarget
+    var local: FocusState<Bool>.Binding?
+
+    func body(content: Content) -> some View {
+        if let rowFocus {
+            content.focused(rowFocus, equals: target)
+        } else if let local {
+            content.focused(local)
+        } else {
+            content
+        }
+    }
+}
+
 struct ItemRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
     @Namespace private var previewViewport
     @State private var viewportWidth: CGFloat = 0
     let row: HomeRow
+
+    private var cards: [Item] { Array(row.items.prefix(24)) }
+    private var hasMoreCard: Bool { !row.collection && row.library != nil }
+    private var targets: [MediaRowTarget] {
+        cards.map { .item($0.id) } + (hasMoreCard ? [.more] : [])
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.px(12)) {
@@ -153,16 +219,17 @@ struct ItemRow: View {
             ScrollViewReader { scroller in
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                        ForEach(row.items.prefix(24)) { item in
+                        ForEach(cards) { item in
                             // A grid keeps its columns fixed. Row cards can widen and reveal themselves.
                             PosterLink(item: item, wide: row.wide, previews: !row.wide, showsTitle: row.collection,
                                        previewViewport: previewViewport) { frame in
                                 reveal(item.id, frame: frame, in: scroller)
                             }
-                            .id(item.id)
+                            .id(MediaRowTarget.item(item.id))
                         }
-                        if !row.collection, let library = row.library {
+                        if hasMoreCard, let library = row.library {
                             SeeAllCard(library: library, wide: row.wide)
+                                .id(MediaRowTarget.more)
                         }
                     }
                     .pagePadding()
@@ -171,6 +238,7 @@ struct ItemRow: View {
                 .coordinateSpace(name: previewViewport)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
                 .edgeToEdge()
+                .modifier(MediaRowFocus(targets: targets) { scroller.scrollTo($0) })
             }
         }
         .focusSection()
@@ -185,7 +253,7 @@ struct ItemRow: View {
               let trailingAnchor = CardPreviewLayout.revealAnchor(cardWidth: frame.width, viewportWidth: viewportWidth,
                                                      margin: pageMargin) else { return false }
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
-            scroller.scrollTo(id, anchor: UnitPoint(x: revealTrailing ? trailingAnchor : 1 - trailingAnchor, y: 0.5))
+            scroller.scrollTo(MediaRowTarget.item(id), anchor: UnitPoint(x: revealTrailing ? trailingAnchor : 1 - trailingAnchor, y: 0.5))
         }
         return true
     }
@@ -232,6 +300,7 @@ struct SeeAllCard: View {
                 .frame(width: size.width, height: size.height)
         }
         .buttonStyle(CardStyle())
+        .modifier(MediaRowCardFocus(target: .more))
     }
 }
 
@@ -284,6 +353,7 @@ struct TrailingIconLabel: LabelStyle {
 struct PosterLink: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.cardFocused) private var cardFocused
+    @Environment(\.mediaRowFocus) private var rowFocus
     @FocusState private var focused: Bool
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
@@ -302,6 +372,11 @@ struct PosterLink: View {
     /// A poster's width at the web app's Poster size: small, medium or large.
     static func width(_ size: String) -> CGFloat {
         Theme.px(size == "small" ? 136 : size == "large" ? 200 : 168)
+    }
+
+    private var hasCardFocus: Bool {
+        if let rowFocus { return rowFocus.wrappedValue == .item(item.id) }
+        return focused
     }
 
     private var stillWide: Bool { wide || (item.isEpisode && !portrait) }
@@ -371,8 +446,8 @@ struct PosterLink: View {
                 .clipShape(RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous))
             }
             .buttonStyle(CardStyle())
-            .focused($focused)
-            .onChange(of: focused) { _, on in
+            .modifier(MediaRowCardFocus(target: .item(item.id), local: $focused))
+            .onChange(of: hasCardFocus) { _, on in
                 if on { cardFocused(item) }
                 if !on {
                     revealed = false
@@ -380,17 +455,17 @@ struct PosterLink: View {
                 }
             }
             // Focus resting on it opens it out, as the web app's TV layout does.
-            .task(id: focused) {
-                guard focused, previewable else { return }
+            .task(id: hasCardFocus) {
+                guard hasCardFocus, previewable else { return }
                 try? await Task.sleep(for: CardPreviewTiming.rest)
-                guard !Task.isCancelled, focused else { return }
+                guard !Task.isCancelled, hasCardFocus else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { opened = true }
             }
             .onGeometryChange(for: CGRect?.self) { geometry in
                 guard opened, let previewViewport else { return nil }
                 return geometry.frame(in: .named(previewViewport))
             } action: { frame in
-                guard focused, opened, !revealed, let frame, frame.width >= size.width - 1 else { return }
+                guard hasCardFocus, opened, !revealed, let frame, frame.width >= size.width - 1 else { return }
                 revealed = revealPreview?(frame) ?? false
             }
             .itemMenu(item)
