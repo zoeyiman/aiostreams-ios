@@ -526,10 +526,14 @@ struct SettingsView: View {
                 .ignoresSafeArea()
         }
         .focusScope(settingsScope)
-        .onExitCommand {
-            if showingOptions { dismissOptions() }
-            else { tab = page }
-        }
+        .onExitCommand(perform: settingsBack)
+    }
+
+    private var settingsBack: (() -> Void)? {
+        if showingOptions { return dismissOptions }
+        // Once focus is in the category list, the shell can move it to the active Settings tab.
+        if tab != nil { return nil }
+        return { tab = page }
     }
 
     @ViewBuilder private func pageContent(_ page: SettingsPage) -> some View {
