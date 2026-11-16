@@ -195,7 +195,9 @@ struct ItemRow: View {
                     } else if row.library?.collectionType == "tvshows" {
                         Text(L("Shows")).foregroundStyle(Theme.gray400)
                     }
-                    RowBrowseArrow(title: row.title, route: browseRoute)
+                    RowBrowseArrow(title: row.title, route: browseRoute, firstItemID: cards.first?.id) { id in
+                        scroller.scrollTo(MediaRowTarget.item(id), anchor: .leading)
+                    }
                 }
                 .pagePadding()
                 .focusSection()
@@ -240,6 +242,9 @@ struct ItemRow: View {
 struct RowBrowseArrow: View {
     let title: String
     let route: Route
+    var firstItemID: String?
+    var revealFirst: ((String) -> Void)?
+    @Environment(\.mediaRowFocus) private var rowFocus
 
     var body: some View {
         NavigationLink(value: route) {
@@ -250,6 +255,11 @@ struct RowBrowseArrow: View {
         .buttonStyle(RowBrowseArrowStyle())
         .accessibilityLabel(L("See all: %@", title))
         .modifier(MediaRowCardFocus(target: .browse))
+        .onMoveCommand { direction in
+            guard direction == .down, let firstItemID else { return }
+            revealFirst?(firstItemID)
+            rowFocus?.wrappedValue = .item(firstItemID)
+        }
     }
 }
 
@@ -370,6 +380,7 @@ struct PosterLink: View {
                 .clipShape(RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous))
             }
             .buttonStyle(CardStyle())
+            .focusEffectDisabled()
             .modifier(MediaRowCardFocus(target: .item(item.id), local: $focused))
             .onChange(of: hasCardFocus) { _, on in
                 if on { cardFocused(item) }
@@ -557,23 +568,17 @@ struct DiscoverView: View {
     @State private var message: String?
 
     @State private var showSeries = false
-    @State private var unwatched = false
+    var entryRequest = 0
+    @FocusState private var focusMovies: Bool
     @State private var genre: String?
-    @State private var exploreItems: [Item] = []
-    @State private var isTrending = false
-    @State private var loadedExplore: ExploreQuery?
 
-    private static let genres = ["Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary",
-                                 "Drama", "Family", "Fantasy", "History", "Horror", "Music", "Mystery",
-                                 "Romance", "Science Fiction", "Thriller"]
-
-    private struct ExploreQuery: Equatable {
-        let series: Bool
-        let unwatched: Bool
-        let genre: String?
+    private var genres: [String] {
+        let titles = showSeries ? shows : movies
+        var seen = Set<String>()
+        return titles.flatMap { $0.genres ?? [] }
+            .filter { seen.insert($0.lowercased()).inserted }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
-
-    private var query: ExploreQuery { ExploreQuery(series: showSeries, unwatched: unwatched, genre: genre) }
 
     var body: some View {
         ScrollView {
@@ -591,16 +596,18 @@ struct DiscoverView: View {
                 .pagePadding()
                 .padding(.top, pageTop)
                 HStack(spacing: Theme.px(8)) {
-                    Button(L("Movies")) { showSeries = false }.buttonStyle(SoftPillStyle(selected: !showSeries))
-                    Button(L("TV Shows")) { showSeries = true }.buttonStyle(SoftPillStyle(selected: showSeries))
-                    Button(L("Unwatched")) { unwatched.toggle() }.buttonStyle(SoftPillStyle(selected: unwatched))
+                    Button(L("Movies")) { showSeries = false; genre = nil }
+                        .buttonStyle(SoftPillStyle(selected: !showSeries))
+                        .focused($focusMovies)
+                    Button(L("TV Shows")) { showSeries = true; genre = nil }
+                        .buttonStyle(SoftPillStyle(selected: showSeries))
                 }
                 .pagePadding()
                 .focusSection()
                 ScrollView(.horizontal) {
                     HStack(spacing: Theme.px(8)) {
                         Button(L("All genres")) { genre = nil }.buttonStyle(SoftPillStyle(selected: genre == nil))
-                        ForEach(Self.genres, id: \.self) { name in
+                        ForEach(genres, id: \.self) { name in
                             Button(name) { genre = name }.buttonStyle(SoftPillStyle(selected: genre == name))
                         }
                     }
@@ -609,61 +616,32 @@ struct DiscoverView: View {
                 }
                 .focusSection()
 
-                if loadedExplore == query && !exploreItems.isEmpty {
-                    Text(genre ?? (isTrending ? L("Trending Now") : L("Explore titles"))).font(Theme.font(Theme.xl, .semibold)).pagePadding()
-                    PosterGrid(items: exploreItems, columns: 6)
-                }
-                if genre == nil {
-                    let picks = showSeries ? shows : movies
-                    if !picks.isEmpty {
-                        Text(showSeries ? L("Shows for you") : L("Movies for you"))
-                            .font(Theme.font(Theme.xl, .semibold)).pagePadding()
-                        PosterGrid(items: picks, columns: 6)
-                    } else if exploreItems.isEmpty, let message {
-                        Text(message).foregroundStyle(Theme.gray400).pagePadding()
-                    }
-                } else if loadedExplore == query && exploreItems.isEmpty {
-                    Text(L("No titles in this genre.")).foregroundStyle(Theme.gray400).pagePadding()
-                }
+                recommendations
             }
             .padding(.bottom, Theme.px(44))
         }
         .scrollClipDisabled(false)
+        .onChange(of: entryRequest) { _, _ in focusMovies = true }
         .task { await load() }
-        .task(id: query) { await loadExplore(query) }
-        .refreshOnReturn { await load(); await loadExplore(query) }
-        .reloadOnWatchChange { await load(); await loadExplore(query) }
+        .refreshOnReturn { await load() }
+        .reloadOnWatchChange { await load() }
     }
 
-    private func loadExplore(_ asked: ExploreQuery) async {
-        guard let client = session.client, let userId = session.userId else { return }
-        let kind = asked.series ? "Series" : "Movie"
-        let views: ItemsResult? = try? await client.get("/UserViews", ["userId": userId])
-        let trending = views?.items?.first {
-            homeCatalogKind($0) == .trending && libraryTypes($0).split(separator: ",").contains(Substring(kind))
+    @ViewBuilder private var recommendations: some View {
+        let titles = showSeries ? shows : movies
+        let picks = titles.filter { item in
+            guard let genre else { return true }
+            return item.genres?.contains { $0.caseInsensitiveCompare(genre) == .orderedSame } == true
         }
-        guard !Task.isCancelled, asked == query else { return }
-        var parameters: [String: String?] = [
-            "userId": userId, "Recursive": "true", "IncludeItemTypes": kind,
-            "ParentId": trending?.id, "Genres": asked.genre, "Limit": "48",
-            "EnableUserData": "true", "Fields": "Genres",
-            "Filters": asked.unwatched ? "IsUnplayed" : nil,
-        ]
-        let result: ItemsResult? = try? await client.get("/Items", parameters)
-        var matches = result?.items ?? []
-        let fromTrending = trending != nil && !matches.isEmpty
-        if trending != nil && matches.isEmpty {
-            parameters.removeValue(forKey: "ParentId")
-            parameters["SortBy"] = "DateCreated"
-            parameters["SortOrder"] = "Descending"
-            let fallback: ItemsResult? = try? await client.get("/Items", parameters)
-            matches = fallback?.items ?? []
-        }
-        guard !Task.isCancelled, asked == query else { return }
-        isTrending = fromTrending
-        loadedExplore = asked
-        exploreItems = matches.filter { title in
-            title.type == kind && (!asked.unwatched || title.userData?.played != true)
+        if !picks.isEmpty {
+            Text(genre ?? (showSeries ? L("Shows for you") : L("Movies for you")))
+                .font(Theme.font(Theme.xl, .semibold)).pagePadding()
+            PosterGrid(items: picks, columns: 6)
+        } else if loading && !loaded {
+            ProgressView().pagePadding()
+        } else if loaded {
+            Text(message ?? L("No recommendations in this category yet."))
+                .foregroundStyle(Theme.gray400).pagePadding()
         }
     }
 
@@ -680,15 +658,17 @@ struct DiscoverView: View {
             "userId": userId, "Recursive": "true", "IncludeItemTypes": "Movie,Series,Episode",
             "Filters": "IsPlayed", "SortBy": "DatePlayed", "SortOrder": "Descending", "Limit": "48", "Fields": "Genres",
         ])
-        let (favouriteResult, watchedResult) = await (favourites, watched)
+        async let watchlist = loadWatchlist(client, userId: userId)
+        let (favouriteResult, watchedResult, savedItems) = await (favourites, watched, watchlist)
         guard !Task.isCancelled else { return }
         let favouriteItems = favouriteResult?.items ?? []
         let watchedItems = watchedResult?.items ?? []
         let favouriteIDs = seedIDs(favouriteItems)
         let watchedIDs = seedIDs(watchedItems)
+        let savedIDs = seedIDs(savedItems)
         var seen = Set<String>()
         let seeds = zip(favouriteIDs.prefix(6), watchedIDs.prefix(6)).flatMap { [$0.0, $0.1] }
-            + Array(favouriteIDs.prefix(6)) + Array(watchedIDs.prefix(6))
+            + Array(savedIDs.prefix(6)) + Array(favouriteIDs.prefix(6)) + Array(watchedIDs.prefix(6))
         let unique = seeds.filter { seen.insert($0).inserted }
         let suggestions = await withTaskGroup(of: (Int, ItemsResult?).self) { group in
             for (index, id) in unique.enumerated() {
@@ -706,7 +686,7 @@ struct DiscoverView: View {
             return ordered.keys.sorted().compactMap { ordered[$0] }
         }
         guard !Task.isCancelled else { return }
-        seen.formUnion(favouriteIDs + watchedIDs)
+        seen.formUnion(favouriteIDs + watchedIDs + savedIDs)
         var picks: [Item] = []
         // Interleave results so any one favourite or watched title doesn't dominate the rows.
         for index in 0..<(suggestions.map(\.count).max() ?? 0) {
@@ -726,7 +706,7 @@ struct DiscoverView: View {
         guard !Task.isCancelled else { return }
         var genreWeights: [String: Int] = [:]
         var genreSeeds = Set<String>()
-        let tasteItems = favouriteItems + watchedItems.filter { !$0.isEpisode } + (series?.items ?? [])
+        let tasteItems = favouriteItems + savedItems + watchedItems.filter { !$0.isEpisode } + (series?.items ?? [])
         for item in tasteItems where genreSeeds.insert(item.id).inserted {
             for genre in item.genres ?? [] {
                 genreWeights[genre.lowercased(), default: 0] += 1
@@ -745,7 +725,7 @@ struct DiscoverView: View {
         shows = rankedPicks.filter(\.isSeries)
         loaded = true
         if movies.isEmpty && shows.isEmpty {
-            if (favouriteResult == nil && watchedResult == nil) || (!unique.isEmpty && suggestions.isEmpty) {
+            if (favouriteResult == nil && watchedResult == nil && savedItems.isEmpty) || (!unique.isEmpty && suggestions.isEmpty) {
                 message = L("Recommendations could not be loaded from this server.")
             } else if unique.isEmpty {
                 message = L("Favourite or watch a movie or show to get recommendations here.")
@@ -755,6 +735,25 @@ struct DiscoverView: View {
         } else {
             message = nil
         }
+    }
+
+    private func loadWatchlist(_ client: JellyfinClient, userId: String) async -> [Item] {
+        // AIOMetadata exposes its combined watchlist through the favorites query. Servers can
+        // also make watchlist catalogs available as their own views.
+        let views: ItemsResult? = try? await client.get("/UserViews", ["userId": userId])
+        let catalogs = (views?.items ?? []).filter {
+            isBrowsable($0) && ($0.name?.localizedCaseInsensitiveContains("watchlist") == true)
+        }
+        var titles: [Item] = []
+        for catalog in catalogs.prefix(4) {
+            guard !Task.isCancelled else { return [] }
+            let result: ItemsResult? = try? await client.get("/Items", [
+                "userId": userId, "ParentId": catalog.id, "IncludeItemTypes": "Movie,Series",
+                "Recursive": "true", "Limit": "24", "Fields": "Genres",
+            ])
+            titles.append(contentsOf: result?.items ?? [])
+        }
+        return titles
     }
 
     private func seedIDs(_ items: [Item]) -> [String] {

@@ -55,6 +55,7 @@ struct MainView: View {
     @State private var liveView: Item?
     @State private var paths: [Place: NavigationPath] = [:]
     @FocusState private var railFocus: Place?
+    @State private var discoverEntryRequest = 0
     /// What a card's menu asked to play, from any page.
     @State private var choice: VersionChoice?
     @Namespace private var railScope
@@ -247,7 +248,7 @@ struct MainView: View {
     @ViewBuilder private func page(_ place: Place) -> some View {
         switch place {
         case .home: HomeView()
-        case .discover: DiscoverView()
+        case .discover: DiscoverView(entryRequest: discoverEntryRequest)
         case .live:
             if let liveView { LiveTVView(view: liveView) } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         case .search: SearchView()
@@ -408,6 +409,11 @@ struct MainView: View {
         }
         .buttonStyle(RailButtonStyle())
         .focused($railFocus, equals: item)
+        .onMoveCommand { direction in
+            if direction == .down, item == .discover, place == .discover {
+                discoverEntryRequest &+= 1
+            }
+        }
         .prefersDefaultFocus(item == place, in: topBarScope)
         .accessibilityLabel(item.name)
         .accessibilityAddTraits(item == place ? .isSelected : [])

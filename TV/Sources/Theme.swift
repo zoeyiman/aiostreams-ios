@@ -181,8 +181,8 @@ struct CardStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         Focused { focused in
             configuration.label
-                .brightness(focused ? 0.10 : 0)
-                .scaleEffect(configuration.isPressed ? 1 : focused ? 1.025 : 1)
+                .scaleEffect(focused ? 1.025 : 1)
+                .focusEffectDisabled()
         }
     }
 }

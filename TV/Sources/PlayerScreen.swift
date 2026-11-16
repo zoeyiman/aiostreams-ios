@@ -386,7 +386,8 @@ private struct PlayerChrome: View {
             Button(action: remotePlayPause) {
                 Color.clear.contentShape(Rectangle())
             }
-                .buttonStyle(.plain)
+                .buttonStyle(PlaybackPressStyle())
+                .focusEffectDisabled()
                 .disabled(shown || panel != nil || model.failure != nil)
                 .accessibilityLabel(model.paused ? L("Play") : L("Pause"))
                 .focused($focus, equals: .surface)
@@ -661,7 +662,8 @@ private struct PlayerChrome: View {
                             .frame(height: Theme.px(16))
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlaybackPressStyle())
+                    .focusEffectDisabled()
                     .focused($focus, equals: .bar)
                     .accessibilityLabel(model.paused ? L("Play") : L("Pause"))
                     if !recentLive.isEmpty {
@@ -726,7 +728,8 @@ private struct PlayerChrome: View {
                 ProgressTrack(model: model, focused: focus == .bar)
                     .contentShape(Rectangle())
             }
-                .buttonStyle(.plain)
+                .buttonStyle(PlaybackPressStyle())
+                .focusEffectDisabled()
                 .focused($focus, equals: .bar)
                 .accessibilityLabel(L("Playback position"))
                 .onMoveCommand { direction in
@@ -1719,5 +1722,13 @@ private struct EpisodeDrawerRowStyle: ButtonStyle {
                             in: RoundedRectangle(cornerRadius: Theme.px(8)))
                 .opacity(configuration.isPressed ? 0.8 : 1)
         }
+    }
+}
+
+
+/// These buttons provide Siri Remote Select targets over video and transport artwork.
+private struct PlaybackPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
     }
 }

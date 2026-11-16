@@ -111,7 +111,10 @@ struct LiveTVView: View {
 
     private func channelBrowser(_ selected: Item) -> some View {
         GeometryReader { geometry in
-            HStack(alignment: .top, spacing: Theme.px(22)) {
+            let listWidth = geometry.size.width * 0.38
+            let columnGap = Theme.px(22)
+            let detailWidth = max(1, geometry.size.width - listWidth - columnGap)
+            HStack(alignment: .top, spacing: columnGap) {
                 ScrollView {
                     LazyVStack(spacing: Theme.px(5)) {
                         ForEach(channels) { channel in
@@ -129,11 +132,13 @@ struct LiveTVView: View {
                 .focusScope(channelScope)
                 .id(group)
                 .scrollClipDisabled(false)
-                .frame(width: geometry.size.width * 0.39)
+                .frame(width: listWidth)
                 .clipped()
                 .focusSection()
                 ScrollView {
-                    channelDetail(selected, previewWidth: min(max(1, geometry.size.width * 0.61 - Theme.px(22)), geometry.size.height * 16 / 9))
+                    let previewWidth = min(max(1, detailWidth - Theme.px(28)), geometry.size.height * 0.58 * 16 / 9)
+                    channelDetail(selected, previewWidth: previewWidth)
+                        .frame(width: detailWidth, alignment: .leading)
                 }
                 .scrollClipDisabled(false)
                 .clipped()
@@ -162,7 +167,7 @@ struct LiveTVView: View {
             Text([channel.channelNumber, channel.name].compactMap { $0 }.joined(separator: " · "))
                 .font(Theme.font(Theme.sm, .semibold)).foregroundStyle(Theme.gray400)
             Text(slot?.name ?? channel.name ?? L("Live"))
-                .font(Theme.font(Theme.xl, .bold)).lineLimit(2)
+                .font(Theme.font(Theme.xl, .bold)).fixedSize(horizontal: false, vertical: true)
             if let slot {
                 if let start = slot.start, let end = slot.end {
                     let minutes = max(1, Int(ceil(end.timeIntervalSince(now) / 60)))
@@ -172,7 +177,8 @@ struct LiveTVView: View {
                 ChannelProgress(slot: slot, now: now)
             }
             if let overview = current?.overview, !overview.isEmpty {
-                Text(overview).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray200).lineLimit(3)
+                Text(overview).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray200)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: Theme.px(8)) {
                 Button { play(channel) } label: { Label(L("Full screen"), systemImage: "arrow.up.left.and.arrow.down.right") }
@@ -200,7 +206,7 @@ struct LiveTVView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, Theme.px(6))
-        .padding(.horizontal, Theme.px(5))
+        .padding(.horizontal, Theme.px(14))
     }
 
     private func setFavourite(_ favourite: Bool, for channel: Item) async {

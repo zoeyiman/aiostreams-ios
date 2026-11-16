@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // The web app's title page (pages/item.tsx) as a TV shows it: the backdrop over the top,
 // the poster beside the title's logo, facts, genres and overview, its actions, then the
@@ -40,6 +41,7 @@ struct DetailView: View {
                     castSection
                     if !similar.isEmpty {
                         ItemRow(row: HomeRow(id: "similar", title: L("More like this"), items: similar))
+                            .padding(.leading, Theme.px(12))
                     }
                 }
                 // 26% down a 720-line screen.
@@ -48,7 +50,7 @@ struct DetailView: View {
             }
             .scrollClipDisabled(false)
         }
-        .overlay(alignment: .topLeading) {
+        .safeAreaInset(edge: .top, spacing: 0) {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.backward")
                     .font(Theme.font(Theme.sm, .semibold))
@@ -56,8 +58,10 @@ struct DetailView: View {
             }
             .buttonStyle(RowBrowseArrowStyle())
             .accessibilityLabel(L("Back"))
-            .padding(.leading, pageInset)
-            .padding(.top, pageTop)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .pagePadding()
+            .padding(.vertical, Theme.px(5))
+            .background(Theme.background.opacity(0.96))
         }
         .onExitCommand { dismiss() }
         .task { await load() }
@@ -181,15 +185,13 @@ struct DetailView: View {
                 }
                 .buttonStyle(PrimaryPillStyle())
                 .focused($playFocused)
-                if target.resumeMs != nil {
-                    Button {
-                        choice = VersionChoice(item: target, startMs: 0, mode: target.isEpisode ? .list : .usual)
-                    } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                    }
-                    .buttonStyle(CircleIconStyle())
-                }
             }
+            Button {
+                Task { await setFavourite(!(shown.userData?.isFavorite ?? false)) }
+            } label: {
+                Image(systemName: shown.userData?.isFavorite == true ? "heart.fill" : "heart")
+            }
+            .buttonStyle(CircleIconStyle(active: shown.userData?.isFavorite == true))
             if shown.isSeries || shown.type == "Movie" {
                 let dropped = shown.userData?.likes == false
                 Button {
@@ -201,6 +203,14 @@ struct DetailView: View {
                 .accessibilityLabel(shown.isSeries
                     ? (dropped ? L("Undrop show") : L("Drop show"))
                     : (dropped ? L("Remove dislike") : L("Dislike movie")))
+            }
+            if let target, target.resumeMs != nil {
+                Button {
+                    choice = VersionChoice(item: target, startMs: 0, mode: target.isEpisode ? .list : .usual)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                }
+                .buttonStyle(CircleIconStyle())
             }
             if shown.isSeries {
                 Button { pickingEpisode = true } label: { Image(systemName: "shuffle") }
@@ -222,12 +232,6 @@ struct DetailView: View {
                 Image(systemName: "checkmark")
             }
             .buttonStyle(CircleIconStyle(active: shown.userData?.played == true))
-            Button {
-                Task { await setFavourite(!(shown.userData?.isFavorite ?? false)) }
-            } label: {
-                Image(systemName: shown.userData?.isFavorite == true ? "heart.fill" : "heart")
-            }
-            .buttonStyle(CircleIconStyle(active: shown.userData?.isFavorite == true))
         }
         .focusSection()
     }
@@ -275,7 +279,8 @@ struct DetailView: View {
 
     @ViewBuilder private var castSection: some View {
         let cast = (shown.people ?? []).filter { person in
-            person.type == nil || person.type?.caseInsensitiveCompare("Actor") == .orderedSame
+            let role = person.type?.lowercased()
+            return role == nil || role == "actor" || role == "gueststar" || role == "guest star"
         }
         if !cast.isEmpty {
             VStack(alignment: .leading, spacing: Theme.px(16)) {
@@ -297,8 +302,8 @@ struct DetailView: View {
     }
 
     private func personImage(_ person: Person) -> URL? {
-        guard let client = session.client else { return nil }
-        return client.image(person.id, .primary, tag: person.primaryImageTag, width: 240)
+        guard let client = session.client, let tag = person.primaryImageTag else { return nil }
+        return client.image(person.id, .primary, tag: tag, width: 240)
     }
 
     // MARK: Trailer
@@ -593,6 +598,8 @@ struct EpisodeCard: View {
 /// A cast member: a round picture, their name and role.
 struct PersonCard: View {
     @Environment(\.openRoute) private var openRoute
+    @EnvironmentObject private var session: Session
+    @State private var portrait: UIImage?
     let person: Person
     let url: URL?
 
@@ -602,10 +609,8 @@ struct PersonCard: View {
                 ZStack {
                     Circle().fill(Theme.gray900)
                     Text(initials).font(Theme.font(Theme.lg, .semibold)).foregroundStyle(Theme.gray400)
-                    if let url {
-                        AsyncImage(url: url) { phase in
-                            if case .success(let image) = phase { image.resizable().aspectRatio(contentMode: .fill) }
-                        }
+                    if let portrait {
+                        Image(uiImage: portrait).resizable().aspectRatio(contentMode: .fill)
                     }
                 }
                 .frame(width: Theme.px(96), height: Theme.px(96))
@@ -626,6 +631,27 @@ struct PersonCard: View {
             }
         }
         .frame(width: Theme.px(112))
+        .task(id: url) { await loadPortrait() }
+    }
+
+    private func loadPortrait() async {
+        portrait = nil
+        if let url, let image = await downloadPortrait(url) {
+            portrait = image
+            return
+        }
+        guard !Task.isCancelled, let client = session.client, let userId = session.userId else { return }
+        // The person route resolves provider metadata and registers the primary image on AIOMetadata.
+        let profile: Item? = try? await client.get("/Items/\(person.id)", ["userId": userId])
+        guard !Task.isCancelled, let tag = profile?.tag("Primary") else { return }
+        let address = client.image(person.id, .primary, tag: tag, width: 240)
+        portrait = await downloadPortrait(address)
+    }
+
+    private func downloadPortrait(_ url: URL) async -> UIImage? {
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              !Task.isCancelled, (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return UIImage(data: data)
     }
 
     private var initials: String {

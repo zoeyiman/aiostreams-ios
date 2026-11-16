@@ -585,26 +585,30 @@ struct WideRow: View {
     let play: (Item) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.px(12)) {
-            HStack(spacing: Theme.px(8)) {
-                Text(title).font(Theme.font(Theme.xl, .semibold))
-                RowBrowseArrow(title: title, route: browseRoute)
-            }
-            .pagePadding()
-            .focusSection()
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                    ForEach(items) { item in
-                        WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
-                            .id(MediaRowTarget.item(item.id))
+        ScrollViewReader { scroller in
+            VStack(alignment: .leading, spacing: Theme.px(12)) {
+                HStack(spacing: Theme.px(8)) {
+                    Text(title).font(Theme.font(Theme.xl, .semibold))
+                    RowBrowseArrow(title: title, route: browseRoute, firstItemID: items.first?.id) { id in
+                        scroller.scrollTo(MediaRowTarget.item(id), anchor: .leading)
                     }
                 }
                 .pagePadding()
-                .padding(.vertical, Theme.px(8))
+                .focusSection()
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                        ForEach(items) { item in
+                            WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
+                                .id(MediaRowTarget.item(item.id))
+                        }
+                    }
+                    .pagePadding()
+                    .padding(.vertical, Theme.px(8))
+                }
+                .edgeToEdge()
             }
-            .edgeToEdge()
+            .modifier(MediaRowFocus())
         }
-        .modifier(MediaRowFocus())
         .focusSection()
     }
 }
@@ -665,6 +669,7 @@ struct WideCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous))
             }
             .buttonStyle(CardStyle())
+            .focusEffectDisabled()
             .modifier(MediaRowCardFocus(target: .item(item.id), local: $focused))
             .onChange(of: hasCardFocus) { _, on in if on { cardFocused(item) } }
             .itemMenu(item, continueWatching: continueWatching)
