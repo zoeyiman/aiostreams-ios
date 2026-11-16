@@ -1,8 +1,6 @@
 import SwiftUI
 
-// The web app's version picker (components/version-picker.tsx) as a TV shows it: a panel over
-// the page with the title's art faded into its header, how many versions there are, Resume or
-// From the start, and a card per version with its name and the server's description.
+// Full-screen source selection keeps the episode summary alongside the stream list.
 
 struct VersionsView: View {
     @EnvironmentObject private var session: Session
@@ -11,6 +9,8 @@ struct VersionsView: View {
     let play: (PlayRequest) -> Void
 
     @State private var info: PlaybackInfo?
+    @State private var episodeDetail: Item?
+    @State private var series: Item?
     @State private var error: String?
     @State private var opening: String?
     @State private var fromStart = false
@@ -21,91 +21,127 @@ struct VersionsView: View {
     private var sources: [MediaSource] { info?.mediaSources ?? [] }
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.6).ignoresSafeArea()
-            VStack(spacing: 0) {
-                header
-                list
-            }
-            .frame(width: Theme.px(896))
-            .frame(maxHeight: Theme.px(612))
-            // The art sits behind the header, under everything the panel lists.
-            .background(alignment: .top) {
-                ZStack(alignment: .top) {
-                    Color(white: 17 / 255)
-                    banner
+        GeometryReader { geometry in
+            HStack(alignment: .top, spacing: Theme.px(36)) {
+                VStack(spacing: Theme.px(12)) {
+                    header
+                    list
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: sources.isEmpty ? .center : .top)
                 }
+                .frame(maxWidth: .infinity)
+
+                summary
+                    .frame(width: geometry.size.width * 0.32)
+                    .padding(.top, Theme.px(22))
             }
-            .clipShape(RoundedRectangle(cornerRadius: Theme.px(16), style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.px(16), style: .continuous)
-                    .stroke(.white.opacity(0.1), lineWidth: Theme.px(1))
-            )
-            .shadow(color: .black.opacity(0.6), radius: Theme.px(40))
+            .padding(.horizontal, Theme.px(56))
+            .padding(.vertical, Theme.px(44))
+        }
+        .background {
+            ZStack {
+                RemoteImage(url: session.client?.backdrop(item, height: 720))
+                    .blur(radius: Theme.px(36))
+                LinearGradient(colors: [Color(red: 0.12, green: 0.13, blue: 0.17).opacity(0.9),
+                                        Color(red: 0.18, green: 0.19, blue: 0.24).opacity(0.95)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+            .ignoresSafeArea()
         }
         .foregroundStyle(.white)
         .task { await load(refresh: false) }
+        .task(id: item.id) { await loadSummary() }
         .onExitCommand { dismiss() }
-        // The background from artwork follows the title being chosen for.
-        .washed(by: choice.item)
-    }
-
-    /// The title's art, faded into the panel behind its header.
-    private var banner: some View {
-        ZStack {
-            RemoteImage(url: session.client?.backdrop(item, height: 540))
-                .opacity(0.25)
-            LinearGradient(
-                colors: [Color(white: 17 / 255).opacity(0.3), Color(white: 17 / 255).opacity(0.7), Color(white: 17 / 255)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: Theme.px(180))
-        .clipped()
-        .allowsHitTesting(false)
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Theme.px(12)) {
-            VStack(alignment: .leading, spacing: Theme.px(4)) {
-                Text(item.isEpisode ? (item.seriesName ?? item.displayTitle) : (item.name ?? ""))
+        VStack(spacing: Theme.px(12)) {
+            ZStack {
+                Text(L("Select Source"))
                     .font(Theme.font(Theme.xl, .semibold))
-                    .lineLimit(1)
-                if let line = item.isEpisode ? item.displayTitle : item.productionYear.map(String.init) {
-                    Text(line).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray400).lineLimit(1)
+                HStack(spacing: Theme.px(10)) {
+                    Button { dismiss() } label: {
+                        Label(L("Back"), systemImage: "chevron.left")
+                    }
+                    .buttonStyle(SoftPillStyle())
+                    Spacer()
+                    Text(info == nil ? L("Finding versions") : L("%ld streams", sources.count))
+                        .font(Theme.font(Theme.sm))
+                        .foregroundStyle(Theme.gray200)
+                    Button {
+                        Task { await load(refresh: true) }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(CircleIconStyle())
+                    .accessibilityLabel(L("Refresh sources"))
+                    .disabled(info == nil && error == nil)
                 }
             }
-            HStack(spacing: Theme.px(8)) {
-                Text(info == nil ? L("Finding versions") : L("%ld versions", sources.count))
-                    .font(Theme.font(Theme.sm))
-                    .foregroundStyle(Theme.gray400)
-                Spacer()
-                Button {
-                    Task { await load(refresh: true) }
-                } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                }
-                .buttonStyle(CircleIconStyle())
-                .disabled(info == nil && error == nil)
-            }
-            .focusSection()
             if let resumeMs {
                 HStack(spacing: Theme.px(4)) {
-                    Button(L("Resume from %@", "\(clock(resumeMs))")) { fromStart = false }
+                    Button(L("Resume from %@", clock(resumeMs))) { fromStart = false }
                         .buttonStyle(SegmentStyle(selected: !fromStart))
                     Button(L("From the start")) { fromStart = true }
                         .buttonStyle(SegmentStyle(selected: fromStart))
                 }
                 .padding(Theme.px(4))
-                .background(Capsule().fill(.black.opacity(0.4)))
-                .focusSection()
+                .background(Capsule().fill(.black.opacity(0.35)))
             }
         }
-        .padding(.horizontal, Theme.px(20))
-        .padding(.top, Theme.px(20))
-        .padding(.bottom, Theme.px(12))
+        .padding(.horizontal, Theme.px(10))
+        .focusSection()
+    }
+
+    private var summary: some View {
+        let detail = episodeDetail ?? item
+        let minutes = detail.runtimeMinutes.map { L("%ldm", $0) }
+        let rating = (detail.communityRating ?? series?.communityRating)
+            .map { "★ " + $0.formatted(.number.precision(.fractionLength(1))) }
+        let metadata = [minutes, rating, detail.genres?.first ?? series?.genres?.first].compactMap { $0 }
+        return VStack(spacing: Theme.px(8)) {
+            RemoteImage(url: summaryPoster)
+                .frame(width: Theme.px(210), height: Theme.px(315))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.px(12)))
+            Text(detail.seriesName ?? series?.name ?? detail.name ?? "")
+                .font(Theme.font(Theme.xl, .bold))
+                .lineLimit(2)
+            if detail.isEpisode {
+                Text(detail.displayTitle).font(Theme.font(Theme.base, .semibold)).lineLimit(2)
+            }
+            if !metadata.isEmpty {
+                Text(metadata.joined(separator: " · "))
+                    .font(Theme.font(Theme.sm, .medium))
+                    .foregroundStyle(Theme.gray200)
+            }
+            if let overview = detail.overview ?? item.overview, !overview.isEmpty {
+                Text(overview)
+                    .font(Theme.font(Theme.sm))
+                    .foregroundStyle(Theme.gray200)
+                    .lineLimit(4)
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var summaryPoster: URL? {
+        guard let client = session.client else { return nil }
+        if let series { return client.poster(series, height: 560) }
+        if let id = item.seriesId {
+            return client.image(id, .primary, tag: item.seriesPrimaryImageTag, height: 560)
+        }
+        return client.poster(item, height: 560)
+    }
+
+    private func loadSummary() async {
+        guard let client = session.client, let userId = session.userId else { return }
+        let ids = [item.id, item.seriesId].compactMap { $0 }.joined(separator: ",")
+        let result: ItemsResult? = try? await client.get("/Items", [
+            "userId": userId, "Ids": ids, "Fields": "Overview,Genres",
+        ])
+        guard !Task.isCancelled else { return }
+        episodeDetail = result?.items?.first { $0.id == item.id }
+        series = result?.items?.first { $0.id == item.seriesId }
     }
 
     @ViewBuilder private var list: some View {
@@ -123,10 +159,8 @@ struct VersionsView: View {
                         .focused($focusedVersion, equals: source.ownId)
                     }
                 }
-                .padding(.horizontal, Theme.px(20))
-                .padding(.vertical, Theme.px(12))
+                .padding(Theme.px(10))
             }
-            .scrollClipDisabled()
             .focusSection()
             .onAppear { focusedVersion = sources.first?.ownId }
         } else if let error {
@@ -201,49 +235,56 @@ struct VersionsView: View {
     }
 }
 
-/// One version: a round play icon, its name, and the server's description, line for line.
+/// A source's server-formatted description and a short row of technical details.
 private struct VersionCard: View {
-    @Environment(\.isFocused) private var focused
     let source: MediaSource
     let opening: Bool
 
+    private var badges: [String] {
+        let video = source.mediaStreams?.first { $0.type == "Video" }?.codec?.uppercased()
+        let audio = source.mediaStreams?.first { $0.type == "Audio" }?.codec?.uppercased()
+        return [source.aiostreams?.resolution, video, audio].compactMap { $0 }
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: Theme.px(12)) {
-            ZStack {
-                Circle().fill(focused ? Color.white : Color.white.opacity(0.1))
-                if opening {
-                    ProgressView().scaleEffect(0.6)
-                } else {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: Theme.px(14)))
-                        .foregroundStyle(focused ? Color.black : Color.white)
-                }
-            }
-            .frame(width: Theme.px(36), height: Theme.px(36))
-            VStack(alignment: .leading, spacing: Theme.px(4)) {
+        VStack(alignment: .leading, spacing: Theme.px(5)) {
+            HStack(alignment: .top) {
                 Text(source.label)
-                    .font(Theme.font(Theme.base, .medium))
+                    .font(Theme.font(Theme.base, .semibold))
                     .multilineTextAlignment(.leading)
-                if let description = source.aiostreams?.description, !description.isEmpty {
-                    Text(description)
-                        .font(Theme.font(Theme.sm))
-                        .foregroundStyle(Theme.gray300)
-                        .multilineTextAlignment(.leading)
-                        .lineSpacing(Theme.px(2))
-                } else if let size = source.size, size > 0 {
+                Spacer()
+                if opening {
+                    ProgressView().scaleEffect(0.65)
+                } else if let size = source.aiostreams?.size ?? source.size, size > 0 {
                     Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
-                        .font(Theme.font(Theme.sm))
-                        .foregroundStyle(Theme.gray300)
+                        .font(Theme.font(Theme.sm, .semibold))
+                        .monospacedDigit()
                 }
             }
-            Spacer(minLength: 0)
+            if let description = source.aiostreams?.description, !description.isEmpty {
+                Text(description)
+                    .font(Theme.font(Theme.sm))
+                    .foregroundStyle(Theme.gray200)
+                    .multilineTextAlignment(.leading)
+            }
+            if !badges.isEmpty {
+                HStack(spacing: Theme.px(5)) {
+                    ForEach(Array(badges.enumerated()), id: \.offset) { index, badge in
+                        Text(badge)
+                            .font(Theme.font(Theme.xs, .bold))
+                            .padding(.horizontal, Theme.px(6))
+                            .padding(.vertical, Theme.px(2))
+                            .background((index == 0 && source.aiostreams?.resolution != nil ? Color.green : Color.white)
+                                .opacity(0.25), in: RoundedRectangle(cornerRadius: Theme.px(4)))
+                    }
+                }
+            }
         }
-        .padding(Theme.px(12))
+        .padding(Theme.px(14))
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-/// The card's border and faint fill, its ring inside the border when focused.
 private struct VersionCardStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         Card(label: configuration.label, pressed: configuration.isPressed)
@@ -257,8 +298,8 @@ private struct VersionCardStyle: ButtonStyle {
         var body: some View {
             let shape = RoundedRectangle(cornerRadius: Theme.px(12), style: .continuous)
             label
-                .background(shape.fill(Color.white.opacity(focused ? 0.06 : 0.03)))
-                .overlay(shape.stroke(focused ? Theme.ring : Color.white.opacity(0.05), lineWidth: focused ? Theme.px(2) : Theme.px(1)))
+                .background(shape.fill(Color.white.opacity(focused ? 0.29 : 0.12)))
+                .overlay(shape.stroke(Color.white.opacity(focused ? 0.8 : 0.04), lineWidth: Theme.px(1)))
                 .opacity(pressed ? 0.85 : 1)
         }
     }

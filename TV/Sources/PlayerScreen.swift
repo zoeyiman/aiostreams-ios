@@ -187,7 +187,7 @@ private enum PlayerFocus: Hashable {
 }
 
 private enum PlayerPanel: Hashable {
-    case tracks, audio, chapters, speed, sync, episodes
+    case tracks, audio, chapters, speed, sync, episodes, info
 }
 
 private struct PlayerChrome: View {
@@ -347,6 +347,7 @@ private struct PlayerChrome: View {
                     // On a channel, up and down change channel, as a TV's remote does.
                     case .up where model.request.item.isChannel: changeChannel(-1)
                     case .down where model.request.item.isChannel: changeChannel(1)
+                    case .down where !model.isLive: reveal(.bar); open(.info)
                     default: reveal(.play)
                     }
                 }
@@ -382,7 +383,6 @@ private struct PlayerChrome: View {
             if shown {
                 VStack(spacing: 0) {
                     Spacer()
-                    if panel == nil && model.paused && !model.isLive && model.failure == nil { pauseInfo }
                     controlsDock
                 }
                 .onMoveCommand { direction in
@@ -392,8 +392,19 @@ private struct PlayerChrome: View {
                 }
                 .transition(.opacity)
             } else if model.paused && !model.isLive && model.failure == nil {
-                pauseInfo.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                pauseInfo
+                    .padding(.horizontal, Theme.px(48))
+                    .padding(.bottom, Theme.px(40))
+                    .padding(.top, Theme.px(24))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(LinearGradient(colors: [.black.opacity(0.72), .clear],
+                                               startPoint: .bottom, endPoint: .top))
+                    .frame(maxHeight: .infinity, alignment: .bottom)
                     .allowsHitTesting(false)
+            }
+
+            if (shown || model.paused) && panel == nil && model.failure == nil {
+                playbackHeader
             }
 
             if panel == nil && model.failure == nil {
@@ -494,76 +505,125 @@ private struct PlayerChrome: View {
 
     // MARK: Transport
 
+    private var playbackHeader: some View {
+        ZStack(alignment: .trailing) {
+            if !model.isLive {
+                VStack(spacing: Theme.px(3)) {
+                    Text(L("Swipe down for Info"))
+                    Image(systemName: "chevron.down")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            if prefs.showClock {
+                TimelineView(.everyMinute) { context in
+                    Text(prefs.time(context.date)).monospacedDigit()
+                }
+            }
+        }
+        .font(Theme.font(Theme.sm, .semibold))
+        .padding(.horizontal, Theme.px(48))
+        .padding(.top, Theme.px(30))
+        .padding(.bottom, Theme.px(22))
+        .background(LinearGradient(colors: [.black.opacity(0.7), .clear], startPoint: .top, endPoint: .bottom))
+        .frame(maxHeight: .infinity, alignment: .top)
+        .allowsHitTesting(false)
+    }
+
     private var transportTitle: some View {
         let item = model.request.item
         return VStack(alignment: .leading, spacing: Theme.px(3)) {
-            Text(item.isEpisode ? (item.seriesName ?? item.displayTitle) : (item.name ?? ""))
-                .font(Theme.font(Theme.lg, .semibold))
-                .lineLimit(1)
-            if let detail = item.isEpisode ? item.displayTitle : item.currentProgram?.name {
-                Text(detail).font(Theme.font(Theme.sm))
-                    .foregroundStyle(Theme.gray300)
+            if item.isEpisode {
+                Text([item.seriesName, item.episodeCode].compactMap { $0 }.joined(separator: " · "))
+                    .font(Theme.font(Theme.sm, .medium))
+                    .foregroundStyle(Theme.gray200)
                     .lineLimit(1)
             }
+            Text(item.currentProgram?.name ?? item.name ?? "")
+                .font(Theme.font(Theme.lg, .semibold))
+                .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var pauseInfo: some View {
         let item = model.request.item
-        return VStack(alignment: .leading, spacing: Theme.px(5)) {
-            Text(item.isEpisode ? (item.seriesName ?? item.name ?? "") : (item.name ?? ""))
-                .font(Theme.font(17, .semibold))
-                .lineLimit(1)
-            if item.isEpisode {
-                Text(item.displayTitle).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray300).lineLimit(1)
+        let metadata = [item.episodeCode, item.communityRating.map { "★ " + $0.formatted(.number.precision(.fractionLength(1))) },
+                        item.genres?.first].compactMap { $0 }
+        return VStack(alignment: .leading, spacing: Theme.px(6)) {
+            if let url = session.client?.logo(item, width: 480) {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                            .frame(maxWidth: Theme.px(265), maxHeight: Theme.px(68), alignment: .leading)
+                    } else if item.isEpisode, let series = item.seriesName {
+                        Text(series).font(Theme.font(Theme.lg, .semibold)).lineLimit(1)
+                    }
+                }
+            } else if item.isEpisode, let series = item.seriesName {
+                Text(series).font(Theme.font(Theme.lg, .semibold)).lineLimit(1)
+            }
+            Text(item.name ?? item.displayTitle).font(Theme.font(Theme.xl, .semibold)).lineLimit(1)
+            if !metadata.isEmpty {
+                Text(metadata.joined(separator: " · ")).font(Theme.font(Theme.sm, .medium))
             }
             if let overview = model.overview, !overview.isEmpty {
-                Text(overview).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray200).lineLimit(4)
+                Text(overview).font(Theme.font(Theme.sm)).lineLimit(3)
+            }
+            TimelineView(.everyMinute) { context in
+                let remaining = model.duration - model.position
+                HStack(spacing: Theme.px(10)) {
+                    if model.paused {
+                        Label(L("Paused"), systemImage: "pause.fill")
+                    }
+                    if remaining.isFinite && remaining > 0 {
+                        Text(L("%@ left", clock(remaining)))
+                        Text("·").accessibilityHidden(true)
+                        Text(L("Ends %@", prefs.time(context.date.addingTimeInterval(remaining / max(0.01, model.speed)))))
+                    }
+                }
+                .font(Theme.font(Theme.xs, .semibold))
+                .monospacedDigit()
             }
         }
-        .frame(maxWidth: Theme.px(650), alignment: .leading)
-        .shadow(color: .black.opacity(0.85), radius: Theme.px(4))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Theme.px(48))
-        .padding(.bottom, Theme.px(18))
+        .frame(maxWidth: Theme.px(600), alignment: .leading)
+        .shadow(color: .black, radius: Theme.px(4))
     }
 
     private var controlsDock: some View {
-        VStack(alignment: .leading, spacing: Theme.px(10)) {
-            if let panel {
-                PlayerPanelView(model: model, panel: panel, play: { episode in
-                    closePanel()
-                    input()
-                    playNext(episode)
-                }) { closePanel() }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if !model.paused || model.isLive || prefs.showClock {
-                HStack(alignment: .top) {
-                    if !model.paused || model.isLive { transportTitle } else { Spacer() }
-                    if prefs.showClock {
-                        TimelineView(.everyMinute) { context in
-                            Text(prefs.time(context.date))
-                                .font(Theme.font(Theme.sm, .medium))
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.gray200)
-                        }
-                    }
-                }
+        VStack(alignment: .leading, spacing: Theme.px(8)) {
+            if let panel, panel != .chapters, panel != .info {
+                dockedPanel(panel)
+            }
+            if !model.isLive && model.failure == nil && (panel == .info || (panel == nil && model.paused)) {
+                pauseInfo
             }
 
-            VStack(spacing: Theme.px(8)) {
-                transportButtons
-                    .focusSection()
+            VStack(spacing: Theme.px(6)) {
+                HStack(alignment: .bottom, spacing: Theme.px(16)) {
+                    if !model.paused || model.isLive {
+                        transportTitle
+                    } else {
+                        Spacer(minLength: 0)
+                    }
+                    transportButtons
+                        .fixedSize(horizontal: true, vertical: false)
+                        .focusSection()
+                }
                 if model.isLive {
                     Capsule().fill(.white.opacity(0.22)).frame(height: Theme.px(3))
                 } else {
                     timeline
                 }
             }
-            .disabled(panel != nil)
+            .disabled(panel != nil && panel != .info)
+            .onMoveCommand { direction in
+                if direction == .down && !model.isLive && panel == nil { open(.info) }
+            }
+
+            if panel == .chapters {
+                dockedPanel(.chapters)
+            }
         }
-        // Reserve the space occupied by the menus as well as the transport for subtitles.
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.frame(in: .global).minY
         } action: { top in
@@ -572,18 +632,27 @@ private struct PlayerChrome: View {
         }
         .padding(.horizontal, Theme.px(48))
         .padding(.bottom, Theme.px(26))
-        .padding(.top, Theme.px(44))
         .background {
-            LinearGradient(colors: [.black.opacity(0.92), .black.opacity(0.62), .clear],
+            LinearGradient(colors: [.black.opacity(0.92), .black.opacity(0.55), .clear],
                            startPoint: .bottom, endPoint: .top)
+                .padding(.top, -Theme.px(46))
         }
+    }
+
+    private func dockedPanel(_ panel: PlayerPanel) -> some View {
+        PlayerPanelView(model: model, panel: panel, play: { episode in
+            closePanel()
+            input()
+            playNext(episode)
+        }) { closePanel() }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private var timeline: some View {
         let position = model.scrubTarget ?? model.position
         return VStack(spacing: Theme.px(4)) {
             ProgressTrack(model: model, focused: focus == .bar)
-                .focusable(shown && panel == nil)
+                .focusable(shown && (panel == nil || panel == .info))
                 .focused($focus, equals: .bar)
                 .accessibilityLabel(L("Playback position"))
                 .onMoveCommand { direction in
@@ -592,6 +661,7 @@ private struct PlayerChrome: View {
                     case .left: if !moved(-1) { model.skip(-step) }
                     case .right: if !moved(1) { model.skip(step) }
                     case .up: if !swiping { focus = .play }
+                    case .down: if panel == nil { open(.info) }
                     default: break
                     }
                     wake()
@@ -633,7 +703,6 @@ private struct PlayerChrome: View {
                     .focused($focus, equals: .forward)
 
             }
-            Spacer()
             if model.nextEpisode != nil && model.party == nil {
                 Button { playOn(auto: false) } label: { Image(systemName: "forward.end.fill") }
                     .buttonStyle(ControlIconStyle())
@@ -977,6 +1046,7 @@ private struct PlayerChrome: View {
         case .speed: focus = .speed
         case .sync: focus = prefs.showSyncControls ? .sync : .play
         case .episodes: focus = .episodes
+        case .info: focus = .bar
         case nil: break
         }
         wake()
@@ -1011,13 +1081,12 @@ private struct ProgressTrack: View {
                         .frame(width: Theme.px(3))
                         .offset(x: share(chapter.start) - Theme.px(1.5))
                 }
-                Circle()
+                Capsule()
                     .fill(.white)
-                    .frame(width: Theme.px(14), height: Theme.px(14))
-                    .offset(x: share(model.scrubTarget ?? model.position) - Theme.px(7))
-                    .opacity(focused || model.scrubTarget != nil ? 1 : 0)
+                    .frame(width: Theme.px(4), height: Theme.px(focused ? 16 : 12))
+                    .offset(x: share(model.scrubTarget ?? model.position) - Theme.px(2))
             }
-            .frame(height: focused ? Theme.px(6) : Theme.px(3))
+            .frame(height: Theme.px(3))
             .frame(maxHeight: .infinity)
         }
         .frame(height: Theme.px(16))
@@ -1093,6 +1162,7 @@ private struct PlayerPanelView: View {
         case .chapters: return L("Chapters")
         case .speed: return L("Speed")
         case .sync: return L("Sync")
+        case .info: return L("Info")
         case .episodes: return model.request.item.parentIndexNumber.map { L("Season %@", "\($0)") } ?? L("Episodes")
         }
     }
@@ -1209,7 +1279,7 @@ private struct PlayerPanelView: View {
                             }
                         }
                     }
-                case .sync:
+                case .sync, .info:
                     EmptyView()
                 case .episodes:
                     group(nil) {

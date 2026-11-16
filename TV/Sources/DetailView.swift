@@ -216,7 +216,7 @@ struct DetailView: View {
                 LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                     ForEach(episodes) { episode in
                         EpisodeCard(episode: episode) {
-                            choice = VersionChoice(item: episode, startMs: episode.resumeMs)
+                            choice = VersionChoice(item: episode, startMs: episode.resumeMs, mode: .list)
                         }
                     }
                 }
