@@ -130,6 +130,10 @@ struct HomeRow: Identifiable {
 }
 
 struct ItemRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.layoutDirection) private var layoutDirection
+    @Namespace private var previewViewport
+    @State private var viewportWidth: CGFloat = 0
     let row: HomeRow
 
     var body: some View {
@@ -146,23 +150,44 @@ struct ItemRow: View {
                 }
             }
             .pagePadding()
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                    ForEach(row.items.prefix(24)) { item in
-                        // Posters in a row open into a preview; a grid's would push its columns out.
-                        PosterLink(item: item, wide: row.wide, previews: !row.wide, showsTitle: row.collection)
+            ScrollViewReader { scroller in
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                        ForEach(row.items.prefix(24)) { item in
+                            // A grid keeps its columns fixed. Row cards can widen and reveal themselves.
+                            PosterLink(item: item, wide: row.wide, previews: !row.wide, showsTitle: row.collection,
+                                       previewViewport: previewViewport) { frame in
+                                reveal(item.id, frame: frame, in: scroller)
+                            }
+                            .id(item.id)
+                        }
+                        if !row.collection, let library = row.library {
+                            SeeAllCard(library: library, wide: row.wide)
+                        }
                     }
-                    // The whole library, from the end of its row.
-                    if !row.collection, let library = row.library {
-                        SeeAllCard(library: library, wide: row.wide)
-                    }
+                    .pagePadding()
+                    .padding(.vertical, Theme.px(8))
                 }
-                .pagePadding()
-                .padding(.vertical, Theme.px(8))
+                .coordinateSpace(name: previewViewport)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
+                .edgeToEdge()
             }
-            .edgeToEdge()
         }
         .focusSection()
+    }
+
+    private func reveal(_ id: String, frame: CGRect, in scroller: ScrollViewProxy) -> Bool {
+        let rtl = layoutDirection == .rightToLeft
+        let trailingEdge = rtl ? viewportWidth - frame.minX : frame.maxX
+        let leadingEdge = rtl ? viewportWidth - frame.maxX : frame.minX
+        let revealTrailing = trailingEdge > viewportWidth - pageMargin
+        guard revealTrailing || leadingEdge < pageInset,
+              let trailingAnchor = CardPreviewLayout.revealAnchor(cardWidth: frame.width, viewportWidth: viewportWidth,
+                                                     margin: pageMargin) else { return false }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
+            scroller.scrollTo(id, anchor: UnitPoint(x: revealTrailing ? trailingAnchor : 1 - trailingAnchor, y: 0.5))
+        }
+        return true
     }
 }
 
@@ -257,6 +282,7 @@ struct TrailingIconLabel: LabelStyle {
 /// A title's poster, 168 × 252, with its name and year under it, as the web app's TV rows show;
 /// with `wide`, a still instead.
 struct PosterLink: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.cardFocused) private var cardFocused
     @FocusState private var focused: Bool
     @EnvironmentObject private var session: Session
@@ -268,7 +294,10 @@ struct PosterLink: View {
     var showsTitle = false
     var portrait = false
     var gridWidth: CGFloat?
+    var previewViewport: Namespace.ID?
+    var revealPreview: ((CGRect) -> Bool)?
     @State private var opened = false
+    @State private var revealed = false
 
     /// A poster's width at the web app's Poster size: small, medium or large.
     static func width(_ size: String) -> CGFloat {
@@ -345,14 +374,24 @@ struct PosterLink: View {
             .focused($focused)
             .onChange(of: focused) { _, on in
                 if on { cardFocused(item) }
-                if !on { withAnimation(.easeOut(duration: 0.25)) { opened = false } }
+                if !on {
+                    revealed = false
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { opened = false }
+                }
             }
             // Focus resting on it opens it out, as the web app's TV layout does.
             .task(id: focused) {
                 guard focused, previewable else { return }
                 try? await Task.sleep(for: CardPreviewTiming.rest)
                 guard !Task.isCancelled, focused else { return }
-                withAnimation(.easeOut(duration: 0.3)) { opened = true }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { opened = true }
+            }
+            .onGeometryChange(for: CGRect?.self) { geometry in
+                guard opened, let previewViewport else { return nil }
+                return geometry.frame(in: .named(previewViewport))
+            } action: { frame in
+                guard focused, opened, !revealed, let frame, frame.width >= size.width - 1 else { return }
+                revealed = revealPreview?(frame) ?? false
             }
             .itemMenu(item)
             // What the web app's Poster text asks for: the title, the year, both or neither.
