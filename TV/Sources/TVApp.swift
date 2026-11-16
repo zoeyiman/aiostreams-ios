@@ -172,6 +172,12 @@ struct SignInView: View {
     @State private var code: String?
     @State private var name = ""
     @State private var accountIdentifier = ""
+    @State private var serverProfileNeeds: [String: String] = [:]
+
+    private struct ServerProfile: Decodable {
+        let user: PublicUser
+        let needs: String?
+    }
     @State private var password = ""
     @State private var working = false
     @State private var error: String?
@@ -256,6 +262,15 @@ struct SignInView: View {
             session.carryOn()
             return
         }
+        if let needs = serverProfileNeeds[user.id] {
+            password = ""
+            if needs.isEmpty {
+                switchServerProfile(user, secret: "")
+            } else {
+                mode = .password(user)
+            }
+            return
+        }
         if session.resumeProfile(userID: user.id) { return }
 
         name = user.name ?? ""
@@ -285,33 +300,64 @@ struct SignInView: View {
         }
     }
 
+    private func switchServerProfile(_ user: PublicUser, secret: String) {
+        guard !working, session.asking, let client = session.client else { return }
+        let originalProfile = session.profileID
+        working = true
+        error = nil
+        Task {
+            defer { working = false }
+            do {
+                let result: AuthResult = try await client.post("/AIOStreams/Token", body: [
+                    "UserId": user.id, "Pw": secret,
+                ])
+                guard session.asking, session.profileID == originalProfile,
+                      session.client?.base == client.base else { return }
+                guard result.user.id.lowercased() == user.id.lowercased() else {
+                    error = L("The server returned a different profile.")
+                    return
+                }
+                session.signIn(result)
+            } catch {
+                if session.asking && session.profileID == originalProfile {
+                    self.error = error.localizedDescription
+                }
+            }
+        }
+    }
+
     private var requiresAccountIdentifier: Bool {
         !session.isStock && session.client?.base.path.lowercased() == "/jellyfin"
     }
 
     private func passwordForm(_ user: PublicUser) -> some View {
-        VStack(spacing: Theme.px(20)) {
+        let needs = serverProfileNeeds[user.id]
+        let pinOnly = needs == "pin"
+        let needsAccount = needs == nil && requiresAccountIdentifier
+        return VStack(spacing: Theme.px(20)) {
             UserAvatar(user: user, url: avatarURL(user))
-            Text(L("Password for %@", user.name ?? L("this user")))
+            Text(pinOnly ? L("PIN for %@", user.name ?? L("this user")) : L("Password for %@", user.name ?? L("this user")))
                 .font(Theme.font(Theme.xl, .semibold))
                 .foregroundStyle(Theme.gray200)
-            Text(L("If the user has a PIN, add it after the password with a /, like password/1234."))
-                .font(Theme.font(Theme.sm))
-                .foregroundStyle(Theme.gray400)
-            if requiresAccountIdentifier {
+            if needs == nil || needs == "password-pin" {
+                Text(L("If the user has a PIN, add it after the password with a /, like password/1234."))
+                    .font(Theme.font(Theme.sm))
+                    .foregroundStyle(Theme.gray400)
+            }
+            if needsAccount {
                 TextField(L("Configuration UUID or alias"), text: $accountIdentifier)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .frame(maxWidth: Theme.px(440))
             }
-            SecureField(L("Password"), text: $password)
+            SecureField(pinOnly ? L("PIN") : L("Password"), text: $password)
                 .font(Theme.font(Theme.base))
                 .frame(maxWidth: Theme.px(440))
                 .onSubmit(signIn)
             HStack(spacing: Theme.px(12)) {
                 Button(working ? L("Signing in…") : L("Sign in"), action: signIn)
                     .buttonStyle(PrimaryPillStyle())
-                    .disabled(working || (requiresAccountIdentifier && accountIdentifier.trimmingCharacters(in: .whitespaces).isEmpty))
+                    .disabled(working || (needsAccount && accountIdentifier.trimmingCharacters(in: .whitespaces).isEmpty))
                 Button(L("Back")) { mode = .pick }.buttonStyle(SecondaryPillStyle())
             }
         }
@@ -375,13 +421,20 @@ struct SignInView: View {
         async let serverUsers: [PublicUser]? = session.asking && client.token != nil
             ? try? client.get("/Users") : nil
         async let quickConnect: Bool? = try? publicClient.get("/QuickConnect/Enabled")
-        let (listed, authenticated, quick) = await (publicUsers, serverUsers, quickConnect)
+        async let switchable: [ServerProfile]? = session.asking && client.token != nil && !session.isStock
+            ? try? client.get("/AIOStreams/Users") : nil
+        let (listed, authenticated, quick, shared) = await (publicUsers, serverUsers, quickConnect, switchable)
         guard !Task.isCancelled else { return }
         var seen = Set<String>()
         let visibleUsers = (authenticated ?? []).filter {
             $0.policy?.isHidden != true || $0.id == session.userId
         }
-        users = (visibleUsers + (listed ?? [])).filter { seen.insert($0.id).inserted }
+        if let shared {
+            users = shared.map(\.user).filter { seen.insert($0.id).inserted }
+            serverProfileNeeds = Dictionary(shared.map { ($0.user.id, $0.needs ?? "") }, uniquingKeysWith: { first, _ in first })
+        } else {
+            users = (visibleUsers + (listed ?? [])).filter { seen.insert($0.id).inserted }
+        }
         quickConnectEnabled = quick ?? false
         loaded = true
         if session.asking && users.isEmpty, let id = session.userId, let name = session.userName {
@@ -425,6 +478,10 @@ struct SignInView: View {
     }
 
     private func signIn() {
+        if case .password(let user) = mode, serverProfileNeeds[user.id] != nil {
+            switchServerProfile(user, secret: password)
+            return
+        }
         guard let client = session.client, !working, !name.isEmpty else { return }
         let account = accountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
         let pickedUser: Bool

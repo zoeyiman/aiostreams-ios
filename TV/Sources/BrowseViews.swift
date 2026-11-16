@@ -6,7 +6,7 @@ enum Route: Hashable {
     case library(Item)
     case collectionCovers(Item)
     case latest(String)
-    case rowResults(title: String, items: [Item])
+    case rowResults(title: String, items: [Item], wide: Bool = false)
     case person(Person)
     case playlist(Item)
 }
@@ -22,10 +22,10 @@ extension View {
                 case .latest(let type):
                     LibraryView(view: Item(id: "", name: type == "Movie" ? L("Latest movies") : L("Latest shows"),
                                            collectionType: type == "Movie" ? "movies" : "tvshows"), latest: true)
-                case .rowResults(let title, let items):
+                case .rowResults(let title, let items, let wide):
                     ScrollView {
                         PageTitle(text: title)
-                        PosterGrid(items: items)
+                        PosterGrid(items: items, wide: wide)
                     }
                     .edgeToEdge()
                 case .person(let person): PersonView(person: person)
@@ -147,10 +147,21 @@ struct RowBrowseArrow: View {
         NavigationLink(value: route) {
             Image(systemName: "chevron.right")
                 .font(Theme.font(Theme.sm, .semibold))
-                .frame(width: Theme.px(28), height: Theme.px(28))
+                .frame(width: Theme.px(24), height: Theme.px(28))
         }
-        .buttonStyle(SoftPillStyle())
+        .buttonStyle(RowBrowseArrowStyle())
         .accessibilityLabel(L("See all: %@", title))
+    }
+}
+
+private struct RowBrowseArrowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Focused { focused in
+            configuration.label
+                .foregroundStyle(focused ? Color.white : Theme.gray400)
+                .scaleEffect(focused ? 1.18 : 1)
+                .opacity(configuration.isPressed ? 0.75 : 1)
+        }
     }
 }
 
@@ -228,6 +239,7 @@ struct PosterLink: View {
     /// Opens into a card preview when focus rests on it (Settings > Interface > Card previews).
     var previews = false
     var showsTitle = false
+    var portrait = false
     @State private var opened = false
 
     /// A poster's width at the web app's Poster size: small, medium or large.
@@ -235,7 +247,7 @@ struct PosterLink: View {
         Theme.px(size == "small" ? 136 : size == "large" ? 200 : 168)
     }
 
-    private var stillWide: Bool { wide || item.isEpisode }
+    private var stillWide: Bool { wide || (item.isEpisode && !portrait) }
     private var size: CGSize {
         let width = Self.width(prefs.posterSize)
         let base = stillWide ? WideCard.size : CGSize(width: width, height: width * 1.5)
@@ -255,6 +267,9 @@ struct PosterLink: View {
             return item.tag("Primary") != nil
                 ? client.poster(item, height: height)
                 : client.backdrop(item, height: height) ?? client.poster(item, height: height)
+        }
+        if portrait && item.isEpisode, let series = item.seriesId {
+            return client.image(series, .primary, tag: item.seriesPrimaryImageTag, height: Int(size.height * 2))
         }
         return stillWide ? client.still(item, height: Int(size.height * 2)) : client.poster(item, height: Int(size.height * 2))
     }
@@ -396,7 +411,7 @@ struct PosterGrid: View {
             spacing: Theme.px(28)
         ) {
             ForEach(items) { item in
-                PosterLink(item: item, wide: wide, showsTitle: wide)
+                PosterLink(item: item, wide: wide, showsTitle: wide, portrait: !wide)
                     .onAppear { if item.id == items.last?.id { onLast?() } }
             }
         }
@@ -801,18 +816,20 @@ struct FavouritesView: View {
 
     var body: some View {
         ScrollView {
-            PageTitle(text: L("Favourites"))
-            SortFilterBar(filter: .constant(nil), sorts: [.added, .name, .released, .rating], sort: $sort, descending: $descending)
-            if loaded && items.isEmpty {
-                Text(L("Titles you favourite show here."))
-                    .font(Theme.font(Theme.base))
-                    .foregroundStyle(Theme.gray400)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .pagePadding()
-                    .padding(.vertical, pageMargin)
-                    .focusable()
+            VStack(alignment: .leading, spacing: Theme.px(10)) {
+                PageTitle(text: L("Favourites"))
+                SortFilterBar(filter: .constant(nil), sorts: [.added, .name, .released, .rating], sort: $sort, descending: $descending)
+                if loaded && items.isEmpty {
+                    Text(L("Titles you favourite show here."))
+                        .font(Theme.font(Theme.base))
+                        .foregroundStyle(Theme.gray400)
+                        .pagePadding()
+                        .padding(.vertical, Theme.px(16))
+                        .focusable()
+                }
+                PosterGrid(items: items)
             }
-            PosterGrid(items: items)
+            .padding(.bottom, pageMargin)
         }
         .edgeToEdge()
         .task { await load() }

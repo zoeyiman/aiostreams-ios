@@ -102,7 +102,7 @@ struct HomeView: View {
             }
             if !resuming.isEmpty {
                 WideRow(title: L("Continue watching"), items: Array(resuming.prefix(24)), play: play) {
-                    RowBrowseArrow(title: L("Continue watching"), route: .rowResults(title: L("Continue watching"), items: resuming))
+                    RowBrowseArrow(title: L("Continue watching"), route: .rowResults(title: L("Continue watching"), items: resuming, wide: true))
                 }
                     .environment(\.cardFocused, { _ in })
             }

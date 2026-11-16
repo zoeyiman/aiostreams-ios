@@ -13,6 +13,7 @@ struct VersionChoice: Identifiable {
     var mode: PlayMode = .usual
     /// What plays on after it, from a playlist, in place of a show's next episode.
     var queue: [Item] = []
+    var channelLineup: [Item] = []
 }
 
 /// The version each title last played in, kept on this device, which resuming goes back to.
@@ -130,7 +131,9 @@ struct PlayFlow: ViewModifier {
             }) { choice in
                 VersionsView(choice: choice) { request in
                     LastVersions.set(request.item.id, request.source)
-                    pendingPlay = request
+                    var resolved = request
+                    resolved.channelLineup = choice.channelLineup
+                    pendingPlay = resolved
                     self.choice = nil
                 }
                 .environmentObject(session)
@@ -182,7 +185,7 @@ struct PlayFlow: ViewModifier {
         let sources = (info?.mediaSources ?? []).filter { $0.aiostreams?.ytId == nil }
         let last = (choice.startMs ?? 0) > 0 ? LastVersions.find(choice.item.id, in: sources) : nil
         guard let source = last ?? sources.first else {
-            self.choice = VersionChoice(item: choice.item, startMs: choice.startMs, mode: .list)
+            self.choice = VersionChoice(item: choice.item, startMs: choice.startMs, mode: .list, queue: choice.queue, channelLineup: choice.channelLineup)
             return
         }
         // Named again, the version brings its subtitles from the configuration's subtitle addons.
@@ -194,7 +197,7 @@ struct PlayFlow: ViewModifier {
             playSession = named.playSessionId ?? playSession
         }
         LastVersions.set(choice.item.id, chosen)
-        present(PlayRequest(item: choice.item, source: chosen, playSessionId: playSession, startMs: choice.startMs, queue: choice.queue))
+        present(PlayRequest(item: choice.item, source: chosen, playSessionId: playSession, startMs: choice.startMs, queue: choice.queue, channelLineup: choice.channelLineup))
     }
 
 }
@@ -242,6 +245,7 @@ struct PlayRequest: Identifiable {
     var isTrailer = false
     /// What plays on after it, from a playlist, in place of a show's next episode.
     var queue: [Item] = []
+    var channelLineup: [Item] = []
     /// Audio languages in place of the account's, as a trailer's own language stands in for Original.
     var audioLanguages: [String]?
     /// The watch party's title it plays, which the party's commands drive.

@@ -19,6 +19,7 @@ struct PlayerScreen: View {
     @State private var model: PlayerModel?
     /// The episode a version is being found for, to play on in.
     @State private var finding: Item?
+    @State private var changingChannel = false
 
     var body: some View {
         Group {
@@ -141,12 +142,17 @@ struct PlayerScreen: View {
 
     /// The next or previous channel, from up or down on a channel's video, in the guide's order.
     private func changeChannel(_ step: Int) async {
-        guard let current = model, current.request.item.isChannel, finding == nil,
+        guard let current = model, current.request.item.isChannel, finding == nil, !changingChannel,
               let client = session.client, let userId = session.userId else { return }
-        let list: ItemsResult? = try? await client.get("/LiveTv/Channels", [
-            "userId": userId, "SortBy": "SortName", "AddCurrentProgram": "false", "EnableImages": "false",
-        ])
-        let channels = list?.items ?? []
+        changingChannel = true
+        defer { changingChannel = false }
+        var channels = current.request.channelLineup
+        if channels.isEmpty {
+            let list: ItemsResult? = try? await client.get("/LiveTv/Channels", [
+                "userId": userId, "AddCurrentProgram": "false", "EnableImages": "false",
+            ])
+            channels = list?.items ?? []
+        }
         guard let index = channels.firstIndex(where: { $0.id == current.request.item.id }), channels.count > 1 else { return }
         let next = channels[(index + step + channels.count) % channels.count]
         finding = next
@@ -161,7 +167,8 @@ struct PlayerScreen: View {
             playSession = named.playSessionId ?? playSession
         }
         current.stop()
-        await start(PlayRequest(item: next, source: source, playSessionId: playSession, startMs: nil))
+        await start(PlayRequest(item: next, source: source, playSessionId: playSession, startMs: nil,
+                                channelLineup: channels))
     }
 }
 
@@ -368,6 +375,11 @@ private struct PlayerChrome: View {
                     Spacer()
                     if model.paused && !model.isLive && model.failure == nil { pauseInfo }
                     bottomBar
+                }
+                .onMoveCommand { direction in
+                    guard model.request.item.isChannel, panel == nil else { return }
+                    if direction == .up { changeChannel(-1) }
+                    if direction == .down { changeChannel(1) }
                 }
                 .transition(.opacity)
             } else if model.paused && !model.isLive && model.failure == nil {

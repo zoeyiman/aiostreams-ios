@@ -42,6 +42,7 @@ struct LiveTVView: View {
     @State private var choice: VersionChoice?
     @State private var selectedID: String?
     @State private var previewRequest = UUID()
+    @FocusState private var focusedChannel: String?
     @State private var fullScreenPlayer = false
     @State private var favourites: [String: Bool] = [:]
     @State private var pendingFavourite: String?
@@ -84,6 +85,9 @@ struct LiveTVView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .edgeToEdge()
         .playFlow($choice, playerVisibility: { fullScreenPlayer = $0 }) { resumeBrowser() }
+        .onChange(of: focusedChannel) { previous, current in
+            if previous != nil, let current, current != selectedID { tune(current) }
+        }
         .task { await loadGroups() }
         .task(id: group) { await reload() }
         .task(id: window.start) { await refreshSchedules() }
@@ -102,9 +106,9 @@ struct LiveTVView: View {
                     LazyVStack(spacing: Theme.px(5)) {
                         ForEach(channels) { channel in
                             ChannelRow(channel: channel, slots: slots(channel), now: now, selected: channel.id == selected.id) {
-                                selectedID = channel.id
-                                previewRequest = UUID()
+                                tune(channel.id)
                             }
+                            .focused($focusedChannel, equals: channel.id)
                             .accessibilityAddTraits(channel.id == selected.id ? .isSelected : [])
                             .onAppear { if channel.id == channels.last?.id { Task { await more() } } }
                         }
@@ -379,8 +383,13 @@ struct LiveTVView: View {
         return (nil, nil)
     }
 
+    private func tune(_ id: String) {
+        selectedID = id
+        previewRequest = UUID()
+    }
+
     private func play(_ channel: Item) {
-        choice = VersionChoice(item: channel, startMs: nil, mode: .straight)
+        choice = VersionChoice(item: channel, startMs: nil, mode: .straight, channelLineup: channels)
     }
 }
 
@@ -527,6 +536,7 @@ private struct ChannelPreview: View {
     }
 
     private func preview() async {
+        try? await Task.sleep(for: .milliseconds(120))
         guard !Task.isCancelled, let client = session.client, let userID = session.userId else { return }
         guard let info = try? await client.playbackInfo(userId: userID, itemId: channel.id),
               let first = info.mediaSources?.first else {

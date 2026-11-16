@@ -181,6 +181,9 @@ struct MainView: View {
         }
         // Back from another place's first page goes Home; from Home, it leaves the app.
         .onExitCommand(perform: exitAction)
+        .onChange(of: place) { previous, _ in
+            paths.removeValue(forKey: previous)
+        }
         .onChange(of: railFocus) { _, focused in
             if top, let focused, Place.main.contains(focused), focused != place {
                 place = focused
