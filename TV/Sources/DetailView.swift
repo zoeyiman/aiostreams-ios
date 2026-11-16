@@ -149,7 +149,7 @@ struct DetailView: View {
         HStack(spacing: Theme.px(8)) {
             if let target {
                 Button {
-                    choice = VersionChoice(item: target, startMs: target.resumeMs)
+                    choice = VersionChoice(item: target, startMs: target.resumeMs, mode: target.isEpisode ? .list : .usual)
                 } label: {
                     Label(playLabel, systemImage: "play.fill")
                 }
@@ -157,7 +157,7 @@ struct DetailView: View {
                 .focused($playFocused)
                 if target.resumeMs != nil {
                     Button {
-                        choice = VersionChoice(item: target, startMs: 0)
+                        choice = VersionChoice(item: target, startMs: 0, mode: target.isEpisode ? .list : .usual)
                     } label: {
                         Image(systemName: "arrow.counterclockwise")
                     }

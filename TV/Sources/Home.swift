@@ -110,7 +110,7 @@ struct HomeView: View {
                 Color.clear.frame(height: Theme.px(16))
             }
             if !resuming.isEmpty {
-                WideRow(title: L("Continue watching"), items: Array(resuming.prefix(24)), play: play) {
+                WideRow(title: L("Continue watching"), items: Array(resuming.prefix(24)), play: playFromContinueWatching) {
                     RowBrowseArrow(title: L("Continue watching"), route: .rowResults(title: L("Continue watching"), items: resuming, wide: true))
                 }
                     .environment(\.cardFocused, { _ in })
@@ -137,6 +137,14 @@ struct HomeView: View {
 
     private func play(_ item: Item) {
         Task { choice = await playChoice(for: item, session: session) }
+    }
+
+    private func playFromContinueWatching(_ item: Item) {
+        if item.isEpisode {
+            choice = VersionChoice(item: item, startMs: item.resumeMs, mode: .list)
+        } else {
+            play(item)
+        }
     }
 
     private func load() async {
