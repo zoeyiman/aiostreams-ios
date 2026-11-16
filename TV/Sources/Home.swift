@@ -72,6 +72,8 @@ struct HomeView: View {
     @State private var choice: VersionChoice?
     @State private var followed: Item?
 
+    @State private var scrollY: CGFloat = 0
+
     private var following: Bool { prefs.heroMode != "rotate" }
 
     var body: some View {
@@ -88,7 +90,22 @@ struct HomeView: View {
                 }
             } else {
                 ScrollView { rows }
+                    .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.contentOffset.y + geometry.contentInsets.top
+                    } action: { _, offset in scrollY = offset }
                     .edgeToEdge()
+                    .mask(alignment: .top) {
+                        let bar = Theme.topBarInset
+                        let covered = min(bar, max(0, scrollY - HeroCarousel.height + bar))
+                        VStack(spacing: 0) {
+                            if !hero.isEmpty, bar > 0, covered > 0 {
+                                Color.clear.frame(height: covered)
+                                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                                    .frame(height: Theme.px(8))
+                            }
+                            Rectangle()
+                        }
+                    }
                     .padding(.top, hero.isEmpty ? Theme.topBarInset : 0)
             }
         }
@@ -591,30 +608,30 @@ struct WideRow<Action: View>: View {
     var body: some View {
         let targets = items.map { MediaRowTarget.item($0.id) }
         return ScrollViewReader { scroller in
-            VStack(alignment: .leading, spacing: Theme.px(12)) {
+            VStack(alignment: .leading, spacing: ShelfLayout.headerGap) {
                 HStack {
                     Text(title).font(Theme.font(Theme.xl, .semibold))
                     Spacer()
                     action()
-                    MediaRowArrows(scroll: rowScroll, stride: WideCard.size.width + Theme.px(16), targets: targets) { target in
+                    MediaRowArrows(scroll: rowScroll, stride: ShelfLayout.wideWidth + ShelfLayout.gap, targets: targets) { target in
                         browsedTarget = target
-                        let width = WideCard.size.width
-                        let leading = min(1, pageInset / max(1, rowScroll.viewportWidth - width))
+                        let width = ShelfLayout.wideWidth
+                        let leading = min(1, ShelfLayout.inset / max(1, rowScroll.viewportWidth - width))
                         let anchor = UnitPoint(x: layoutDirection == .rightToLeft ? 1 - leading : leading, y: 0.5)
                         scroller.scrollTo(target, anchor: anchor)
                     }
                 }
-                .pagePadding()
+                .shelfPadding()
                 .focusSection()
                 ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                    LazyHStack(alignment: .top, spacing: ShelfLayout.gap) {
                         ForEach(items) { item in
-                            WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
+                            WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching, width: ShelfLayout.wideWidth) { play(item) }
                                 .id(MediaRowTarget.item(item.id))
                         }
                     }
-                    .pagePadding()
-                    .padding(.vertical, Theme.px(8))
+                    .shelfPadding()
+                    .padding(.vertical, Theme.px(5))
                 }
                 .edgeToEdge()
                 .onScrollGeometryChange(for: MediaRowScroll.self) {
@@ -638,6 +655,7 @@ struct WideCard: View {
     /// Not out yet: the air day over the still, and how long until it beside the name.
     var upcoming = false
     var continueWatching = false
+    var width: CGFloat = Theme.px(304)
     let action: () -> Void
 
     private var hasCardFocus: Bool {
@@ -650,13 +668,14 @@ struct WideCard: View {
     private var hidden: Bool { prefs.blurSpoilers && item.unstarted && !hasCardFocus }
 
     static let size = CGSize(width: Theme.px(304), height: Theme.px(171))
+    private var height: CGFloat { width * 9 / 16 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.px(8)) {
             Button(action: action) {
                 ZStack(alignment: .bottom) {
-                    RemoteImage(url: session.client?.still(item, height: Int(Self.size.height * 2)))
-                        .frame(width: Self.size.width, height: Self.size.height)
+                    RemoteImage(url: session.client?.still(item, height: Int(height * 2)))
+                        .frame(width: width, height: height)
                         .blur(radius: hidden ? Theme.px(12) : 0, opaque: true)
                         .animation(.easeOut(duration: 0.3), value: hidden)
                         .overlay(alignment: .topLeading) {
@@ -679,7 +698,7 @@ struct WideCard: View {
                         .frame(height: Theme.px(4))
                     }
                 }
-                .frame(width: Self.size.width, height: Self.size.height)
+                .frame(width: width, height: height)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous))
             }
             .buttonStyle(CardStyle())
@@ -704,7 +723,7 @@ struct WideCard: View {
                     .animation(.easeOut(duration: 0.3), value: hidden)
             }
             .padding(.horizontal, Theme.px(2))
-            .frame(width: Self.size.width, alignment: .leading)
+            .frame(width: width, alignment: .leading)
         }
     }
 }

@@ -256,11 +256,25 @@ private struct RowScrollArrowStyle: ButtonStyle {
     }
 }
 
+enum ShelfLayout {
+    static let inset = Theme.px(12)
+    static let gap = Theme.px(14)
+    static let headerGap = Theme.px(10)
+    static let wideWidth = Theme.px(280)
+
+    static func posterWidth(_ size: String) -> CGFloat {
+        Theme.px(size == "small" ? 136 : size == "large" ? 184 : 156)
+    }
+}
+
+extension View {
+    func shelfPadding() -> some View { padding(.horizontal, ShelfLayout.inset) }
+}
+
 struct ItemRow: View {
     @EnvironmentObject private var prefs: Preferences
     @State private var rowScroll = MediaRowScroll()
     @State private var browsedTarget: MediaRowTarget?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
     @Namespace private var previewViewport
     @State private var viewportWidth: CGFloat = 0
@@ -272,48 +286,56 @@ struct ItemRow: View {
         cards.map { .item($0.id) } + (hasMoreCard ? [.more] : [])
     }
 
+    private var width: CGFloat {
+        row.wide ? ShelfLayout.wideWidth : ShelfLayout.posterWidth(prefs.posterSize)
+    }
+
+    private var subtitle: String? {
+        if row.collection { return L("Collections") }
+        switch row.library?.collectionType {
+        case "movies": return L("Movies")
+        case "tvshows": return L("Shows")
+        case "boxsets": return L("Collections")
+        default:
+            if case .latest(let type)? = row.browseRoute { return type == "Movie" ? L("Movies") : L("Shows") }
+            return nil
+        }
+    }
+
+    private var route: Route {
+        if let library = row.library { return row.collection ? .collectionCovers(library) : .library(library) }
+        return row.browseRoute ?? .rowResults(title: row.title, items: row.items)
+    }
+
     var body: some View {
         ScrollViewReader { scroller in
-            VStack(alignment: .leading, spacing: Theme.px(12)) {
-                HStack(spacing: Theme.px(8)) {
-                    Text(row.title).font(Theme.font(Theme.xl, .semibold))
-                    if row.collection, row.library != nil {
-                        Text(L("Collections")).foregroundStyle(Theme.gray400)
-                    }
-                    if let library = row.library {
-                        RowBrowseArrow(title: row.title, route: row.collection ? .collectionCovers(library) : .library(library))
-                    } else {
-                        RowBrowseArrow(title: row.title, route: row.browseRoute ?? .rowResults(title: row.title, items: row.items))
-                    }
+            VStack(alignment: .leading, spacing: ShelfLayout.headerGap) {
+                HStack {
+                    RowBrowseArrow(title: row.title, route: route, subtitle: subtitle, showsHeading: true)
                     Spacer()
-                    MediaRowArrows(scroll: rowScroll, stride: (row.wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)) + Theme.px(16),
-                                   targets: targets) { target in
+                    MediaRowArrows(scroll: rowScroll, stride: width + ShelfLayout.gap, targets: targets) { target in
                         browsedTarget = target
-                        let width = row.wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)
-                        let leading = min(1, pageInset / max(1, rowScroll.viewportWidth - width))
+                        let leading = min(1, ShelfLayout.inset / max(1, rowScroll.viewportWidth - width))
                         let anchor = UnitPoint(x: layoutDirection == .rightToLeft ? 1 - leading : leading, y: 0.5)
                         scroller.scrollTo(target, anchor: anchor)
                     }
                 }
-                .pagePadding()
+                .shelfPadding()
                 .focusSection()
                 ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                    LazyHStack(alignment: .top, spacing: ShelfLayout.gap) {
                         ForEach(cards) { item in
-                            // A grid keeps its columns fixed. Row cards can widen and reveal themselves.
                             PosterLink(item: item, wide: row.wide, previews: !row.wide, showsTitle: row.collection,
-                                       previewViewport: previewViewport) { frame in
-                                reveal(item.id, frame: frame, in: scroller)
-                            }
-                            .id(MediaRowTarget.item(item.id))
+                                       gridWidth: width, previewViewport: previewViewport, previewWidth: viewportWidth)
+                                .id(MediaRowTarget.item(item.id))
                         }
                         if hasMoreCard, let library = row.library {
-                            SeeAllCard(library: library, wide: row.wide)
+                            SeeAllCard(library: library, wide: row.wide, width: width)
                                 .id(MediaRowTarget.more)
                         }
                     }
-                    .pagePadding()
-                    .padding(.vertical, Theme.px(8))
+                    .shelfPadding()
+                    .padding(.vertical, Theme.px(5))
                 }
                 .coordinateSpace(name: previewViewport)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
@@ -326,31 +348,31 @@ struct ItemRow: View {
         }
         .focusSection()
     }
-
-    private func reveal(_ id: String, frame: CGRect, in scroller: ScrollViewProxy) -> Bool {
-        let rtl = layoutDirection == .rightToLeft
-        let trailingEdge = rtl ? viewportWidth - frame.minX : frame.maxX
-        let leadingEdge = rtl ? viewportWidth - frame.maxX : frame.minX
-        let revealTrailing = trailingEdge > viewportWidth - pageMargin
-        guard revealTrailing || leadingEdge < pageInset,
-              let trailingAnchor = CardPreviewLayout.revealAnchor(cardWidth: frame.width, viewportWidth: viewportWidth,
-                                                     margin: pageMargin) else { return false }
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
-            scroller.scrollTo(MediaRowTarget.item(id), anchor: UnitPoint(x: revealTrailing ? trailingAnchor : 1 - trailingAnchor, y: 0.5))
-        }
-        return true
-    }
 }
 
 struct RowBrowseArrow: View {
     let title: String
     let route: Route
+    var subtitle: String?
+    var showsHeading = false
 
     var body: some View {
         NavigationLink(value: route) {
-            Image(systemName: "chevron.right")
-                .font(Theme.font(Theme.sm, .semibold))
-                .frame(width: Theme.px(24), height: Theme.px(28))
+            HStack(alignment: .firstTextBaseline, spacing: Theme.px(8)) {
+                if showsHeading {
+                    Text(title).font(Theme.font(Theme.xl, .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .lineLimit(1)
+                }
+                if let subtitle {
+                    Text(subtitle).font(Theme.font(Theme.sm))
+                        .foregroundStyle(Theme.gray400)
+                        .lineLimit(1)
+                }
+                Image(systemName: "chevron.forward")
+                    .font(Theme.font(Theme.sm, .semibold))
+                    .frame(width: Theme.px(18), height: Theme.px(28))
+            }
         }
         .buttonStyle(RowBrowseArrowStyle())
         .accessibilityLabel(L("See all: %@", title))
@@ -373,8 +395,11 @@ struct SeeAllCard: View {
     let library: Item
     var wide = false
 
+    var width: CGFloat? = nil
+
     private var size: CGSize {
-        wide ? WideCard.size : CGSize(width: Theme.px(168), height: Theme.px(252))
+        let cardWidth = width ?? (wide ? WideCard.size.width : Theme.px(168))
+        return CGSize(width: cardWidth, height: cardWidth * (wide ? 9.0 / 16.0 : 1.5))
     }
 
     var body: some View {
@@ -448,9 +473,9 @@ struct PosterLink: View {
     var portrait = false
     var gridWidth: CGFloat?
     var previewViewport: Namespace.ID?
-    var revealPreview: ((CGRect) -> Bool)?
+    var previewWidth: CGFloat = 0
     @State private var opened = false
-    @State private var revealed = false
+    @State private var previewFrame: CGRect?
 
     /// A poster's width at the web app's Poster size: small, medium or large.
     static func width(_ size: String) -> CGFloat {
@@ -465,9 +490,7 @@ struct PosterLink: View {
     private var stillWide: Bool { wide || (item.isEpisode && !portrait) }
     private var size: CGSize {
         let width = gridWidth ?? (stillWide ? WideCard.size.width : Self.width(prefs.posterSize))
-        let base = CGSize(width: width, height: width * (stillWide ? 9.0 / 16.0 : 1.5))
-        // Opened, the card is as tall as the poster and as wide as a 16:9 picture that tall.
-        return opened ? CGSize(width: base.height * 16 / 9, height: base.height) : base
+        return CGSize(width: width, height: width * (stillWide ? 9.0 / 16.0 : 1.5))
     }
 
     /// Movies, shows and episodes preview; a collection's card already shows all it has.
@@ -487,9 +510,7 @@ struct PosterLink: View {
         VStack(alignment: .leading, spacing: Theme.px(8)) {
             NavigationLink(value: item.isFolder ? Route.library(item) : Route.item(item)) {
                 ZStack(alignment: .topTrailing) {
-                    if opened {
-                        CardPreview(item: item, size: size)
-                    } else if item.type == "BoxSet" {
+                    if item.type == "BoxSet" {
                         let urls = session.client?.collectionArtwork(item, width: Int(size.width * 2), wide: stillWide) ?? []
                         CollectionArtwork(urls: urls)
                             .id(urls)
@@ -532,7 +553,6 @@ struct PosterLink: View {
             .onChange(of: hasCardFocus) { _, on in
                 if on { cardFocused(item) }
                 if !on {
-                    revealed = false
                     withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { opened = false }
                 }
             }
@@ -547,16 +567,31 @@ struct PosterLink: View {
                 guard opened, let previewViewport else { return nil }
                 return geometry.frame(in: .named(previewViewport))
             } action: { frame in
-                guard hasCardFocus, opened, !revealed, let frame, frame.width >= size.width - 1 else { return }
-                revealed = revealPreview?(frame) ?? false
+                previewFrame = frame
             }
             .itemMenu(item)
+            .overlay(alignment: .topLeading) {
+                if opened, hasCardFocus, let frame = previewFrame, previewWidth > 0 {
+                    let width = min(size.height * 16 / 9, max(size.width, previewWidth - ShelfLayout.inset * 2))
+                    let left = min(max(frame.minX, ShelfLayout.inset), max(ShelfLayout.inset, previewWidth - ShelfLayout.inset - width))
+                    CardPreview(item: item, size: CGSize(width: width, height: size.height))
+                        .frame(width: width, height: size.height)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.px(8)))
+                        .focusRing(true)
+                        .shadow(color: .black.opacity(0.65), radius: Theme.px(15), y: Theme.px(6))
+                        .offset(x: left - frame.minX)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                        .transition(.opacity)
+                }
+            }
             // What the web app's Poster text asks for: the title, the year, both or neither.
             let lines = showsTitle ? ["title"] : stillWide ? ["title", "year"] : prefs.posterLines
             VStack(alignment: .leading, spacing: Theme.px(2)) {
                 if lines.contains("title") {
                     Text(item.isEpisode ? (item.seriesName ?? item.displayTitle) : (item.name ?? ""))
-                        .font(Theme.font(Theme.sm, .medium))
+                        .font(Theme.font(Theme.sm, .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
                         .lineLimit(1)
                 }
                 let second = item.isEpisode ? item.displayTitle : item.productionYear.map(String.init)
@@ -570,6 +605,7 @@ struct PosterLink: View {
             .padding(.horizontal, Theme.px(2))
             .frame(width: size.width, alignment: .leading)
         }
+        .zIndex(opened && hasCardFocus ? 1 : 0)
     }
 }
 
@@ -652,9 +688,15 @@ struct PosterGrid: View {
     let items: [Item]
     var onLast: (() -> Void)? = nil
     var wide = false
+    var collectionLayout = false
 
-    private let gap = Theme.px(16)
-    private var preferredWidth: CGFloat { wide ? WideCard.size.width : PosterLink.width(prefs.posterSize) }
+    private var gap: CGFloat { collectionLayout ? ShelfLayout.gap : Theme.px(16) }
+    private var preferredWidth: CGFloat {
+        if collectionLayout {
+            return wide ? ShelfLayout.wideWidth : ShelfLayout.posterWidth(prefs.posterSize)
+        }
+        return wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)
+    }
     private var count: Int { max(1, Int((availableWidth + gap) / (preferredWidth + gap))) }
     private var cardWidth: CGFloat {
         guard availableWidth > 0 else { return preferredWidth }
@@ -674,7 +716,7 @@ struct PosterGrid: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
-        .pagePadding()
+        .padding(.horizontal, collectionLayout ? ShelfLayout.inset : pageInset)
         .padding(.vertical, Theme.px(16))
     }
 }
@@ -890,13 +932,22 @@ struct LibraryView: View {
             if isBoxSet {
                 collectionHeader
             } else {
-                PageTitle(text: view.name ?? L("Library"))
+                if collectionCovers {
+                    Text(view.name ?? L("Library"))
+                        .font(Theme.font(Theme.xl3, .bold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .shelfPadding()
+                        .padding(.top, pageTop)
+                } else {
+                    PageTitle(text: view.name ?? L("Library"))
+                }
                 if !collectionCovers && !latest {
                     SortFilterBar(filters: session.isStock ? ItemFilter.allCases : [.unplayed], filter: $filter,
                                   sorts: session.isStock ? SortKey.allCases : [], sort: $sort, descending: $descending)
                 }
             }
-            PosterGrid(items: items, onLast: { Task { await more() } }, wide: collectionCovers)
+            PosterGrid(items: items, onLast: { Task { await more() } }, wide: collectionCovers,
+                       collectionLayout: collectionCovers || isBoxSet)
             if loading { ProgressView().padding() }
             if let failure {
                 VStack(spacing: Theme.px(12)) {
@@ -947,7 +998,7 @@ struct LibraryView: View {
             }
             .focusSection()
         }
-        .pagePadding()
+        .shelfPadding()
         .padding(.top, pageTop)
     }
 

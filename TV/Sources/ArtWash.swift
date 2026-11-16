@@ -26,8 +26,12 @@ struct WashBackground: View {
             Theme.background
             if prefs.flag("artBackground", false), let item = wash.item {
                 RemoteImage(url: session.client?.backdrop(item, height: 360) ?? session.client?.still(item, height: 360))
-                    .blur(radius: Theme.px(40), opaque: true)
-                    .overlay(Color.black.opacity(0.4))
+                    .blur(radius: Theme.px(74), opaque: true)
+                    .saturation(0.62)
+                    .overlay {
+                        LinearGradient(colors: [.black.opacity(0.48), .black.opacity(0.68)],
+                                       startPoint: .top, endPoint: .bottom)
+                    }
                     .id(item.id)
                     .transition(.opacity)
             }
