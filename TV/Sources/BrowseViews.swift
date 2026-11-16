@@ -667,11 +667,14 @@ struct DiscoverView: View {
         func tasteScore(_ item: Item) -> Int {
             (item.genres ?? []).reduce(0) { $0 + genreWeights[$1, default: 0] }
         }
-        picks = picks.enumerated().map { (index: $0.offset, item: $0.element, score: tasteScore($0.element)) }
-            .sorted { $0.score == $1.score ? $0.index < $1.index : $0.score > $1.score }
-            .map(\.item)
-        movies = picks.filter { $0.type == "Movie" }
-        shows = picks.filter(\.isSeries)
+        let scores = picks.map { tasteScore($0) }
+        let rankedIndices = picks.indices.sorted { left, right in
+            if scores[left] == scores[right] { return left < right }
+            return scores[left] > scores[right]
+        }
+        let rankedPicks = rankedIndices.map { picks[$0] }
+        movies = rankedPicks.filter { $0.type == "Movie" }
+        shows = rankedPicks.filter(\.isSeries)
         loaded = true
         if movies.isEmpty && shows.isEmpty {
             if (favouriteResult == nil && watchedResult == nil) || (!unique.isEmpty && suggestions.isEmpty) {
