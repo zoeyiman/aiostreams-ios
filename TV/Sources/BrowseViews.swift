@@ -1050,7 +1050,7 @@ struct FavouritesView: View {
     }
 
     private func segments<Option: Hashable>(_ options: [Option], selection: Binding<Option>,
-                                            title: (Option) -> String) -> some View {
+                                            title: @escaping (Option) -> String) -> some View {
         HStack(spacing: Theme.px(3)) {
             ForEach(options, id: \.self) { option in
                 Button { selection.wrappedValue = option } label: {
