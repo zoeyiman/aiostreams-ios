@@ -40,6 +40,8 @@ struct ItemMenu: ViewModifier {
     let item: Item
     @State private var adding = false
     @State private var choosingDevice = false
+    @State private var choosingEpisode = false
+    @State private var randomEpisode: Item?
     var continueWatching = false
     /// On the title's own page, where Open would lead nowhere.
     var onPage = false
@@ -78,6 +80,11 @@ struct ItemMenu: ViewModifier {
                 }
                 if item.playable || item.isSeries {
                     Button { adding = true } label: { Label(L("Add to playlist"), systemImage: "text.badge.plus") }
+                }
+                if item.isSeries {
+                    Button { choosingEpisode = true } label: {
+                        Label(L("Random episode"), systemImage: "shuffle")
+                    }
                 }
                 if item.isEpisode, let seriesId = item.seriesId {
                     Button {
@@ -150,6 +157,18 @@ struct ItemMenu: ViewModifier {
                     Label(L("Remove from playlist"), systemImage: "minus.circle")
                 }
             }
+        }
+        .fullScreenCover(isPresented: $choosingEpisode, onDismiss: {
+            guard let episode = randomEpisode else { return }
+            randomEpisode = nil
+            play(episode, .list)
+        }) {
+            RandomEpisodePicker(series: item) { episode in
+                randomEpisode = episode
+                choosingEpisode = false
+            }
+            .environmentObject(session)
+            .environmentObject(prefs)
         }
         .fullScreenCover(isPresented: $choosingDevice) {
             ItemRemotePicker(item: item) { choosingDevice = false }

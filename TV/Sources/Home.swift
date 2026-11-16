@@ -586,20 +586,20 @@ struct WideRow: View {
     let play: (Item) -> Void
 
     var body: some View {
-        let targets = items.map { MediaRowTarget.item($0.id) } + [.more]
+        let targets = items.map { MediaRowTarget.item($0.id) }
         return ScrollViewReader { scroller in
             VStack(alignment: .leading, spacing: Theme.px(12)) {
-                Text(title)
-                    .font(Theme.font(Theme.xl, .semibold))
-                    .pagePadding()
+                HStack(spacing: Theme.px(8)) {
+                    Text(title).font(Theme.font(Theme.xl, .semibold))
+                    RowBrowseArrow(title: title, route: browseRoute)
+                }
+                .pagePadding()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                         ForEach(items) { item in
                             WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
                                 .id(MediaRowTarget.item(item.id))
                         }
-                        SeeAllCard(title: title, route: browseRoute, wide: true)
-                            .id(MediaRowTarget.more)
                     }
                     .pagePadding()
                     .padding(.vertical, Theme.px(8))

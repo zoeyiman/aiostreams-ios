@@ -20,6 +20,8 @@ struct DetailView: View {
     @State private var nextUp: Item?
     @State private var similar: [Item] = []
     @State private var choice: VersionChoice?
+    @State private var pickingEpisode = false
+    @State private var randomChoice: VersionChoice?
     @FocusState private var playFocused: Bool
 
     private var shown: Item { full ?? item }
@@ -54,6 +56,17 @@ struct DetailView: View {
         }
         .reloadOnWatchChange { await load() }
         .playFlow($choice) { Task { await load() } }
+        .fullScreenCover(isPresented: $pickingEpisode, onDismiss: {
+            choice = randomChoice
+            randomChoice = nil
+        }) {
+            RandomEpisodePicker(series: shown) { episode in
+                randomChoice = VersionChoice(item: episode, startMs: episode.resumeMs, mode: .list)
+                pickingEpisode = false
+            }
+            .environmentObject(session)
+            .environmentObject(prefs)
+        }
         .fullScreenCover(item: $trailer) { request in
             PlayerScreen(request: request, close: { trailer = nil })
                 .environmentObject(session)
@@ -71,8 +84,8 @@ struct DetailView: View {
 
     private var header: some View {
         HStack(alignment: .bottom, spacing: Theme.px(32)) {
-            RemoteImage(url: session.client?.poster(shown, height: 672))
-                .frame(width: Theme.px(224), height: Theme.px(336))
+            RemoteImage(url: session.client?.poster(shown, height: 516))
+                .frame(width: Theme.px(172), height: Theme.px(258))
                 .clipShape(RoundedRectangle(cornerRadius: Theme.px(12), style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: Theme.px(12), style: .continuous).stroke(.white.opacity(0.1), lineWidth: Theme.px(1)))
                 .shadow(color: .black.opacity(0.6), radius: Theme.px(24), y: Theme.px(12))
@@ -163,6 +176,11 @@ struct DetailView: View {
                     }
                     .buttonStyle(CircleIconStyle())
                 }
+            }
+            if shown.isSeries {
+                Button { pickingEpisode = true } label: { Image(systemName: "shuffle") }
+                    .buttonStyle(CircleIconStyle())
+                    .accessibilityLabel(L("Random episode"))
             }
             if shown.remoteTrailers?.contains(where: { $0.url != nil }) == true {
                 Button {
@@ -591,5 +609,79 @@ struct CircleCardStyle: ButtonStyle {
                 }
             }
         }
+    }
+}
+
+
+/// Like the desktop picker, keeps one pool per opening and excludes the previous pick when possible.
+struct RandomEpisodePicker: View {
+    @EnvironmentObject private var session: Session
+    @EnvironmentObject private var prefs: Preferences
+    @Environment(\.dismiss) private var dismiss
+    @State private var episodes: [Item]?
+    @State private var episode: Item?
+    @State private var failed = false
+    @State private var loading = false
+    @FocusState private var playFocused: Bool
+    let series: Item
+    let play: (Item) -> Void
+
+    var body: some View {
+        VStack(spacing: Theme.px(16)) {
+            Text(L("Random episode")).font(Theme.font(Theme.xl, .semibold))
+            if let episode {
+                RemoteImage(url: session.client?.still(episode, height: 540))
+                    .frame(width: Theme.px(448), height: Theme.px(252))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.px(12)))
+                Text(episode.displayTitle).font(Theme.font(Theme.lg, .semibold))
+                HStack(spacing: Theme.px(12)) {
+                    Button(episode.resumeMs == nil ? L("Play") : L("Resume")) { play(episode) }
+                        .buttonStyle(PrimaryPillStyle())
+                        .focused($playFocused)
+                    if (episodes?.count ?? 0) > 1 {
+                        Button(L("Roll again")) { roll() }.buttonStyle(SoftPillStyle())
+                    }
+                }
+            } else if failed {
+                Text(L("Could not pick an episode."))
+                Button(L("Try again")) { Task { await load() } }.buttonStyle(SoftPillStyle())
+            } else if episodes?.isEmpty == true {
+                Text(L("This show has no episodes to pick from yet."))
+            } else {
+                ProgressView()
+            }
+            Button(L("Back")) { dismiss() }.buttonStyle(SoftPillStyle())
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task { await load() }
+        .onChange(of: episode?.id) { previous, _ in
+            if previous == nil { playFocused = true }
+        }
+        .onExitCommand { dismiss() }
+    }
+
+    private func load() async {
+        guard !loading, let client = session.client, let userId = session.userId else { return }
+        loading = true
+        failed = false
+        defer { loading = false }
+        do {
+            let result: ItemsResult = try await client.get("/Shows/\(series.id)/Episodes", ["userId": userId])
+            guard !Task.isCancelled else { return }
+            let now = Date()
+            episodes = (result.items ?? []).filter { candidate in
+                let future = parseDate(candidate.premiereDate).map { $0 > now } ?? false
+                return candidate.isEpisode && candidate.playable && candidate.parentIndexNumber != 0
+                    && (!prefs.markUnaired || !future)
+            }
+            roll()
+        } catch {
+            if !Task.isCancelled { failed = true }
+        }
+    }
+
+    private func roll() {
+        guard let episodes else { return }
+        episode = episodes.filter { $0.id != episode?.id }.randomElement() ?? episodes.first
     }
 }

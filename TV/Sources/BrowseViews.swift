@@ -131,7 +131,6 @@ struct HomeRow: Identifiable {
 
 enum MediaRowTarget: Hashable {
     case item(String)
-    case more
 }
 
 private struct MediaRowFocusKey: EnvironmentKey {
@@ -202,16 +201,21 @@ struct ItemRow: View {
         return row.browseRoute ?? .rowResults(title: row.title, items: row.items)
     }
 
-    private var targets: [MediaRowTarget] { cards.map { .item($0.id) } + [.more] }
+    private var targets: [MediaRowTarget] { cards.map { .item($0.id) } }
 
     var body: some View {
         ScrollViewReader { scroller in
             VStack(alignment: .leading, spacing: Theme.px(12)) {
                 HStack(spacing: Theme.px(8)) {
                     Text(row.title).font(Theme.font(Theme.xl, .semibold))
-                    if row.collection, row.library != nil {
+                    if row.collection || row.library?.collectionType == "boxsets" {
                         Text(L("Collections")).foregroundStyle(Theme.gray400)
+                    } else if row.library?.collectionType == "movies" {
+                        Text(L("Movies")).foregroundStyle(Theme.gray400)
+                    } else if row.library?.collectionType == "tvshows" {
+                        Text(L("Shows")).foregroundStyle(Theme.gray400)
                     }
+                    RowBrowseArrow(title: row.title, route: browseRoute)
                 }
                 .pagePadding()
                 ScrollView(.horizontal) {
@@ -224,8 +228,6 @@ struct ItemRow: View {
                             }
                             .id(MediaRowTarget.item(item.id))
                         }
-                        SeeAllCard(title: row.title, route: browseRoute, wide: row.wide)
-                            .id(MediaRowTarget.more)
                     }
                     .pagePadding()
                     .padding(.vertical, Theme.px(8))
@@ -254,57 +256,29 @@ struct ItemRow: View {
     }
 }
 
-struct SeeAllCard: View {
+struct RowBrowseArrow: View {
     let title: String
     let route: Route
-    var wide = false
-
-    private var size: CGSize {
-        wide ? WideCard.size : CGSize(width: Theme.px(168), height: Theme.px(252))
-    }
 
     var body: some View {
         NavigationLink(value: route) {
-            SeeAllFace(name: title)
-                .frame(width: size.width, height: size.height)
+            Image(systemName: "chevron.forward")
+                .font(Theme.font(Theme.sm, .semibold))
+                .frame(width: Theme.px(24), height: Theme.px(28))
         }
-        .buttonStyle(CardStyle())
-        .modifier(MediaRowCardFocus(target: .more))
+        .buttonStyle(RowBrowseArrowStyle())
+        .accessibilityLabel(L("See all: %@", title))
     }
 }
 
-private struct SeeAllFace: View {
-    @Environment(\.isFocused) private var focused
-    let name: String
-
-    var body: some View {
-        VStack(spacing: Theme.px(12)) {
-            ZStack {
-                Circle().fill(focused ? Color.white : Color.white.opacity(0.1))
-                Image(systemName: "arrow.right")
-                    .font(.system(size: Theme.px(18), weight: .semibold))
-                    .foregroundStyle(focused ? Color.black : Color.white)
-            }
-            .frame(width: Theme.px(48), height: Theme.px(48))
-            VStack(spacing: Theme.px(2)) {
-                Text(L("See all")).font(Theme.font(Theme.sm, .semibold))
-                Text(name)
-                    .font(Theme.font(Theme.xs))
-                    .foregroundStyle(Theme.gray400)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.horizontal, Theme.px(12))
+private struct RowBrowseArrowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Focused { focused in
+            configuration.label
+                .foregroundStyle(focused ? Color.white : Theme.gray400)
+                .scaleEffect(focused ? 1.18 : 1)
+                .opacity(configuration.isPressed ? 0.75 : 1)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous)
-                .fill(Color.white.opacity(focused ? 0.08 : 0.04))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: Theme.px(1))
-        )
     }
 }
 
@@ -1111,7 +1085,6 @@ struct SearchView: View {
 
     private struct Hint: Decodable {
         let name: String?
-        let productionYear: Int?
     }
 
     private struct HintResult: Decodable {
@@ -1165,21 +1138,12 @@ struct SearchView: View {
                 .focusSection()
             }
             if prefs.combineSearch {
-                PosterGrid(items: titles)
+                if !titles.isEmpty { titleRow(L("Results"), items: titles) }
             } else {
-                // A section each, as the web app's search shows them unless they're combined.
                 let movies = titles.filter { $0.type == "Movie" }
                 let shows = titles.filter(\.isSeries)
-                VStack(alignment: .leading, spacing: Theme.px(8)) {
-                    if !movies.isEmpty {
-                        Text(L("Movies")).font(Theme.font(Theme.xl, .semibold)).pagePadding()
-                        PosterGrid(items: movies)
-                    }
-                    if !shows.isEmpty {
-                        Text(L("Shows")).font(Theme.font(Theme.xl, .semibold)).pagePadding()
-                        PosterGrid(items: shows)
-                    }
-                }
+                if !movies.isEmpty { titleRow(L("Movies"), items: movies) }
+                if !shows.isEmpty { titleRow(L("Shows"), items: shows) }
             }
             if searching { ProgressView() }
             if !searching && query.count >= 2 && titles.isEmpty && channels.isEmpty {
@@ -1192,27 +1156,47 @@ struct SearchView: View {
         .ignoresSafeArea(edges: edges)
     }
 
-    private var suggestions: some View {
-        VStack(alignment: .leading, spacing: Theme.px(5)) {
-            Text(L("Suggestions")).font(Theme.font(Theme.sm, .semibold)).foregroundStyle(Theme.gray300)
-            ForEach(Array(hints.enumerated()), id: \.offset) { _, hint in
-                if let name = hint.name, !name.isEmpty {
-                    Button {
-                        chosenTerm = name
-                        term = name
-                    } label: {
-                        HStack(spacing: Theme.px(10)) {
-                            Label(name, systemImage: "magnifyingglass").lineLimit(1)
-                            if let year = hint.productionYear {
-                                Text(String(year)).foregroundStyle(Theme.gray400)
-                            }
+    private func titleRow(_ heading: String, items: [Item]) -> some View {
+        VStack(alignment: .leading, spacing: Theme.px(8)) {
+            Text(heading).font(Theme.font(Theme.xl, .semibold)).pagePadding()
+            ScrollViewReader { scroller in
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: Theme.px(16)) {
+                        ForEach(items) { item in
+                            PosterLink(item: item).id(MediaRowTarget.item(item.id))
                         }
                     }
-                    .buttonStyle(SoftPillStyle())
+                    .pagePadding()
+                    .padding(.vertical, Theme.px(8))
                 }
+                .modifier(MediaRowFocus(targets: items.map { .item($0.id) }) { scroller.scrollTo($0) })
             }
         }
-        .pagePadding()
+        .focusSection()
+    }
+
+    private var suggestions: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: Theme.px(8)) {
+                ForEach(Array(hints.enumerated()), id: \.offset) { _, hint in
+                    if let name = hint.name, !name.isEmpty {
+                        Button {
+                            chosenTerm = name
+                            term = name
+                        } label: {
+                            Label(name, systemImage: "magnifyingglass")
+                                .lineLimit(1)
+                                .font(Theme.font(Theme.sm, .medium))
+                                .padding(.horizontal, Theme.px(9))
+                                .padding(.vertical, Theme.px(5))
+                        }
+                        .buttonStyle(SearchSuggestionStyle())
+                    }
+                }
+            }
+            .pagePadding()
+            .padding(.vertical, Theme.px(6))
+        }
         .focusSection()
     }
 
@@ -1253,6 +1237,17 @@ struct SearchView: View {
         }
         channelResults = live
         searchedTerm = query
+    }
+}
+
+private struct SearchSuggestionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Focused { focused in
+            configuration.label
+                .foregroundStyle(focused ? Color.black : Color.white)
+                .background(focused ? Color.white : Color.white.opacity(0.14), in: RoundedRectangle(cornerRadius: Theme.px(6)))
+                .opacity(configuration.isPressed ? 0.8 : 1)
+        }
     }
 }
 
