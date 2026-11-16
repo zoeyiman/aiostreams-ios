@@ -47,6 +47,7 @@ struct Item: Decodable, Identifiable, Hashable {
     var tags: [String]?
     var collectionType: String?
     var imageTags: [String: String]?
+    var primaryImageAspectRatio: Double?
     var backdropImageTags: [String]?
     var parentBackdropItemId: String?
     var parentBackdropImageTags: [String]?
@@ -580,14 +581,19 @@ struct JellyfinClient: Sendable {
         return backdrop(item, height: height) ?? poster(item, height: height)
     }
 
-    /// Wide cards prefer Jellyfin's landscape thumbnail, then the collection's primary cover.
-    /// maxWidth keeps the source aspect ratio through the image endpoint.
+    /// Prefer the cover made for the card shape and keep its original proportions.
     func collectionArtwork(_ item: Item, width: Int, wide: Bool = true) -> [URL] {
-        let thumb = wide ? item.tag("Thumb").map { image(item.id, .thumb, tag: $0, width: width) } : nil
-        let primary = image(item.id, .primary, tag: item.tag("Primary"), width: width)
+        let primaryTag = item.tag("Primary")
+        let primary = image(item.id, .primary, tag: primaryTag, width: width)
         let backdrop = item.backdropImageTags?.first.map {
             image(item.id, .backdrop, tag: $0, width: width)
         }
+        guard wide else { return [primary, backdrop].compactMap { $0 } }
+        let thumb = item.tag("Thumb").map { image(item.id, .thumb, tag: $0, width: width) }
+        if item.primaryImageAspectRatio.map({ $0 <= 1.2 }) == true {
+            return [thumb, backdrop, primary].compactMap { $0 }
+        }
+        if primaryTag == nil { return [thumb, backdrop, primary].compactMap { $0 } }
         return [thumb, primary, backdrop].compactMap { $0 }
     }
 

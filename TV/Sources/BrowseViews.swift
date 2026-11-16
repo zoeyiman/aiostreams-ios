@@ -351,7 +351,7 @@ struct PosterLink: View {
                         CardPreview(item: item, size: size)
                     } else if item.type == "BoxSet" {
                         let urls = session.client?.collectionArtwork(item, width: Int(size.width * 2), wide: stillWide) ?? []
-                        CollectionArtwork(urls: urls)
+                        CollectionArtwork(urls: urls, wide: stillWide)
                             .id(urls)
                             .frame(width: size.width, height: size.height)
                     } else {
@@ -436,6 +436,7 @@ struct PosterLink: View {
 /// Keep logos and lettering inside the card even when the server supplies art of a different shape.
 private struct CollectionArtwork: View {
     let urls: [URL]
+    var wide = true
     @State private var index = 0
 
     var body: some View {
@@ -445,7 +446,22 @@ private struct CollectionArtwork: View {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
-                        image.resizable().scaledToFit()
+                        GeometryReader { geometry in
+                            let size = geometry.size
+                            ZStack {
+                                if wide {
+                                    image.resizable().scaledToFill()
+                                        .frame(width: size.width, height: size.height)
+                                        .clipped()
+                                        .blur(radius: Theme.px(22), opaque: true)
+                                        .overlay(Color.black.opacity(0.45))
+                                        .accessibilityHidden(true)
+                                }
+                                image.resizable().scaledToFit()
+                                    .frame(width: size.width, height: size.height)
+                            }
+                            .clipped()
+                        }
                     case .failure:
                         Color.clear.task(id: url) {
                             guard urls.indices.contains(index), urls[index] == url else { return }

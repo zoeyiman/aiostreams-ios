@@ -57,6 +57,8 @@ struct MainView: View {
     /// What a card's menu asked to play, from any page.
     @State private var choice: VersionChoice?
     @Namespace private var railScope
+    @Namespace private var topBarScope
+    @State private var topBarExit: Task<Void, Never>?
     /// The whole screen, rail and page, which focus is re-picked within after a rail choice.
     @Namespace private var shellScope
     @Environment(\.resetFocus) private var resetFocus
@@ -194,6 +196,7 @@ struct MainView: View {
             paths.removeValue(forKey: previous)
         }
         .onChange(of: railFocus) { previous, focused in
+            topBarExit?.cancel()
             guard top, let focused else { return }
             // Like the web app's navigationBack, enter the bar at the current page.
             // A directional move within the bar can then switch pages.
@@ -378,12 +381,16 @@ struct MainView: View {
         // Never wider than the screen, which would push every page off its edges.
         .frame(width: UIScreen.main.bounds.width, height: Theme.topBarInset, alignment: .topLeading)
         .focusSection()
-        // Down goes to the page, should the focus engine find nothing straight below a tab.
+        .focusScope(topBarScope)
+        // Let the system move into the page. Only retry if the same tab still has focus.
         .onMoveCommand { direction in
-            guard direction == .down else { return }
-            Task {
+            topBarExit?.cancel()
+            guard direction == .down, let focused = railFocus else { return }
+            let active = place
+            topBarExit = Task {
                 try? await Task.sleep(for: .milliseconds(120))
-                if railFocus != nil { leaveRail() }
+                guard !Task.isCancelled, top, railFocus == focused, place == active else { return }
+                leaveRail()
             }
         }
         .disabled(DemoMode.keepsRailShut || railLocked)
@@ -403,17 +410,14 @@ struct MainView: View {
 
     private func tab(_ item: Place, named: Bool = true) -> some View {
         Button {
-            if Place.main.contains(item) {
-                place = item
-                leaveRail()
-            } else {
-                select(item)
-            }
+            select(item)
+            if item != .account { leaveRail() }
         } label: {
             TopTab(item: item, current: item == place, named: named, avatar: avatarURL)
         }
         .buttonStyle(RailButtonStyle())
         .focused($railFocus, equals: item)
+        .prefersDefaultFocus(item == place, in: topBarScope)
         .accessibilityLabel(item.name)
         .accessibilityAddTraits(item == place ? .isSelected : [])
     }
@@ -569,7 +573,9 @@ private struct TopTab: View {
                 .frame(width: Theme.px(22), height: Theme.px(22))
                 .clipShape(Circle())
             } else {
-                Image(systemName: item.icon).font(.system(size: Theme.px(14), weight: current || focused ? .semibold : .regular))
+                Image(systemName: item.icon)
+                    .font(.system(size: Theme.px(14), weight: current || focused ? .semibold : .regular))
+                    .frame(width: Theme.px(18))
                 if item != .settings && named {
                     Text(item.name).font(Theme.font(Theme.sm, .medium)).lineLimit(1).fixedSize()
                 }
