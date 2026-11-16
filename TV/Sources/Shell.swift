@@ -89,9 +89,9 @@ struct MainView: View {
                 page(place)
                     .routes()
                     .toolbar(.hidden, for: .navigationBar)
-                    .onExitCommand(perform: place == .settings ? nil : exitAction)
             }
             .id(place)
+            .onExitCommand(perform: place == .settings ? nil : exitAction)
             // One area the focus can move into from the rail, wherever on the page it lands.
             .focusSection()
             // The page is where focus goes when the shell picks it again, rather than the rail.
@@ -457,9 +457,18 @@ struct MainView: View {
         leaveRail()
     }
 
-    /// Back first returns focus to the active tab. Only the Home tab can exit the app.
+    /// Back pops the active tab's stack before handling Back at a root page.
     private var exitAction: (() -> Void)? {
-        guard paths[place]?.isEmpty ?? true else { return nil }
+        let active = place
+        if paths[active]?.isEmpty == false {
+            return {
+                guard place == active, var path = paths[active], !path.isEmpty else { return }
+                path.removeLast()
+                paths[active] = path
+                exitArmed = false
+                exitHint?.cancel()
+            }
+        }
         if place == .settings && railFocus == .settings { return returnFromSettings }
         if place != .home { return { railFocus = place } }
         if railFocus == nil { return { railFocus = place } }

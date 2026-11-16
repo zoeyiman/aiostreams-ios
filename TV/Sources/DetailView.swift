@@ -6,7 +6,6 @@ import UIKit
 // seasons as pills over a row of episodes, the cast, and titles like it.
 
 struct DetailView: View {
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
     let item: Item
@@ -56,7 +55,6 @@ struct DetailView: View {
                 }
             }
         }
-        .onExitCommand { dismiss() }
         .task { await load() }
         // Find versions when a title opens: what Play would play, looked for straight away.
         .task(id: target?.id) {
