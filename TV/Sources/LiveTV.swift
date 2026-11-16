@@ -58,8 +58,8 @@ struct LiveTVView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.px(12)) {
-            header
-            controls
+            header.zIndex(1)
+            controls.zIndex(1)
             if showsGuide {
                 GuideView(channels: channels, schedules: schedules, window: window, now: now, play: play,
                           playFromStart: { programme in
@@ -123,6 +123,7 @@ struct LiveTVView: View {
                 .focusSection()
             }
         }
+        .clipped()
         .pagePadding()
     }
 
@@ -222,7 +223,7 @@ struct LiveTVView: View {
             .focusSection()
         }
         .pagePadding()
-        .padding(.top, Theme.px(40))
+        .padding(.top, pageTop)
     }
 
     private var controls: some View {
@@ -573,13 +574,19 @@ private struct ChannelPreview: View {
 private struct ChannelPreviewSurface: UIViewRepresentable {
     let engine: AetherEngine
 
-    func makeUIView(context: Context) -> AetherPlayerView {
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.clipsToBounds = true
         let view = AetherPlayerView()
+        view.frame = container.bounds
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.clipsToBounds = true
+        container.addSubview(view)
         engine.bind(view: view)
-        return view
+        return container
     }
 
-    func updateUIView(_ view: AetherPlayerView, context: Context) {}
+    func updateUIView(_ view: UIView, context: Context) {}
 }
 
 // MARK: - Guide

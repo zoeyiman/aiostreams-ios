@@ -164,7 +164,7 @@ final class Preferences: ObservableObject {
 
     /// The TV's navigation: `rail`, the docked rail down the side, or `top`, tabs across the top,
     /// as the web app's TV navigation setting offers (kept on this Apple TV).
-    @Published var tvNavigation: String = UserDefaults.standard.string(forKey: "interface.tvNavigation") ?? "rail" {
+    @Published var tvNavigation: String = UserDefaults.standard.string(forKey: "interface.tvNavigation") ?? "top" {
         didSet { UserDefaults.standard.set(tvNavigation, forKey: "interface.tvNavigation") }
     }
 
@@ -448,6 +448,31 @@ struct SettingsView: View {
     @Namespace private var settingsScope
 
     var body: some View {
+        Group {
+            if let chooser {
+                ChooserPanel(chooser: chooser) { self.chooser = nil }
+            } else if let picker {
+                MultiChooserPanel(chooser: picker) { self.picker = nil }
+            } else {
+                settingsPages
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task { await loadFeaturedOptions() }
+        .task { if !DemoMode.active { newer = await UpdateCheck.newer() } }
+        .task {
+            guard let client = session.client else { return }
+            let enabled: Bool? = try? await client.get("/QuickConnect/Enabled")
+            quickConnect = enabled == true
+        }
+        .fullScreenCover(isPresented: $approving) {
+            QuickConnectApproval { approving = false }
+                .environmentObject(session)
+                .presentationBackground(.clear)
+        }
+    }
+
+    private var settingsPages: some View {
         VStack(alignment: .leading, spacing: Theme.px(24)) {
             PageTitle(text: L("Settings"))
             HStack(alignment: .top, spacing: Theme.px(32)) {
@@ -472,26 +497,6 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .focusScope(settingsScope)
         .ignoresSafeArea()
-        .task { await loadFeaturedOptions() }
-        .task { if !DemoMode.active { newer = await UpdateCheck.newer() } }
-        .task {
-            guard let client = session.client else { return }
-            let enabled: Bool? = try? await client.get("/QuickConnect/Enabled")
-            quickConnect = enabled == true
-        }
-        .fullScreenCover(isPresented: $approving) {
-            QuickConnectApproval { approving = false }
-                .environmentObject(session)
-                .presentationBackground(.clear)
-        }
-        .fullScreenCover(item: $chooser) { chooser in
-            ChooserPanel(chooser: chooser) { self.chooser = nil }
-                .presentationBackground(.clear)
-        }
-        .fullScreenCover(item: $picker) { picker in
-            MultiChooserPanel(chooser: picker) { self.picker = nil }
-                .presentationBackground(.clear)
-        }
     }
 
     @ViewBuilder private func pageContent(_ page: SettingsPage) -> some View {
@@ -698,15 +703,17 @@ struct SettingsView: View {
                 synced(L("Time format"), key: "timeFormat", fallback: "auto",
                        options: [(L("Automatic"), "auto"), (L("12-hour"), "12"), (L("24-hour"), "24")])
             }
-            section(L("Sidebar tabs"), note: nil) {
-                ForEach(prefs.sidebarOrder) { place in
+            section(prefs.tvNavigation == "top" ? L("Top bar tabs") : L("Sidebar tabs"), note: nil) {
+                ForEach(prefs.sidebarOrder.filter {
+                    prefs.tvNavigation != "top" || Place.main.contains($0)
+                }) { place in
                     let hidden = prefs.hiddenSidebarTabs.contains(place)
                     row(place.name, value: hidden ? L("Hidden") : L("Shown")) {
                         editSidebarTab(place, hidden: hidden)
                     }
                 }
                 if prefs.sidebarOrder != Place.sidebarDefault {
-                    row(L("Reset sidebar order"), value: "") { prefs.resetSidebarOrder() }
+                    row(L("Reset tab order"), value: "") { prefs.resetSidebarOrder() }
                 }
             }
         case .theme:
@@ -928,17 +935,24 @@ struct SettingsView: View {
     }
 
     private func editSidebarTab(_ place: Place, hidden: Bool) {
-        guard let index = prefs.sidebarOrder.firstIndex(of: place) else { return }
+        let tabs = prefs.sidebarOrder.filter { prefs.tvNavigation != "top" || Place.main.contains($0) }
+        guard let index = tabs.firstIndex(of: place),
+              let fullIndex = prefs.sidebarOrder.firstIndex(of: place) else { return }
         var options: [(String, String)] = []
-        if index > 0 { options.append((L("Move up"), "up")) }
-        if index + 1 < prefs.sidebarOrder.count { options.append((L("Move down"), "down")) }
+        if index > 0 { options.append((prefs.tvNavigation == "top" ? L("Move left") : L("Move up"), "up")) }
+        if index + 1 < tabs.count {
+            options.append((prefs.tvNavigation == "top" ? L("Move right") : L("Move down"), "down"))
+        }
         if Place.main.contains(place), place != .home {
             options.append((hidden ? L("Show") : L("Hide"), "visibility"))
         }
         chooser = Chooser(title: place.name, options: options, current: "") { action in
             switch action {
-            case "up": prefs.moveSidebarTab(place, by: -1)
-            case "down": prefs.moveSidebarTab(place, by: 1)
+            case "up", "down":
+                let neighbor = tabs[index + (action == "up" ? -1 : 1)]
+                if let target = prefs.sidebarOrder.firstIndex(of: neighbor) {
+                    prefs.moveSidebarTab(place, by: target - fullIndex)
+                }
             case "visibility": prefs.toggleSidebarTab(place)
             default: break
             }
@@ -1152,50 +1166,46 @@ struct MultiChooserPanel: View {
     @FocusState private var focused: String?
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.6).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: Theme.px(12)) {
-                Text(chooser.title).font(Theme.font(Theme.xl, .semibold)).padding(.horizontal, Theme.px(8))
-                if let note = chooser.note {
-                    Text(note).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray400).padding(.horizontal, Theme.px(8))
-                }
-                ScrollView {
-                    VStack(spacing: Theme.px(4)) {
-                        ForEach(chooser.options, id: \.value) { option in
-                            let on = chosen.contains(option.value)
-                            Button {
-                                if on {
-                                    chosen.removeAll { $0 == option.value }
-                                } else if chosen.count < chooser.limit {
-                                    chosen.append(option.value)
-                                }
-                                chooser.choose(chosen)
-                            } label: {
-                                HStack(spacing: Theme.px(10)) {
-                                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                                        .font(.system(size: Theme.px(16), weight: .semibold))
-                                        .foregroundStyle(on ? Theme.ring : Theme.gray500)
-                                    Text(option.label).font(Theme.font(Theme.base))
-                                    Spacer()
-                                }
-                                .padding(.horizontal, Theme.px(14))
-                                .frame(height: Theme.px(44))
-                                .opacity(on || chosen.count < chooser.limit ? 1 : 0.5)
-                            }
-                            .buttonStyle(RowStyle(radius: Theme.px(8)))
-                            .focused($focused, equals: option.value)
-                        }
-                    }
-                    .padding(Theme.px(8))
-                }
-                .scrollClipDisabled()
+        VStack(alignment: .leading, spacing: Theme.px(12)) {
+            SettingsChoiceHeader(title: chooser.title, back: done)
+            if let note = chooser.note {
+                Text(note).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray400).padding(.horizontal, Theme.px(8))
             }
-            .padding(Theme.px(20))
-            .frame(width: Theme.px(520))
-            .frame(maxHeight: Theme.px(640))
-            .background(RoundedRectangle(cornerRadius: Theme.px(16), style: .continuous).fill(Color(white: 17 / 255)))
-            .overlay(RoundedRectangle(cornerRadius: Theme.px(16), style: .continuous).stroke(.white.opacity(0.1), lineWidth: Theme.px(1)))
+            ScrollView {
+                VStack(spacing: Theme.px(4)) {
+                    ForEach(chooser.options, id: \.value) { option in
+                        let on = chosen.contains(option.value)
+                        Button {
+                            if on {
+                                chosen.removeAll { $0 == option.value }
+                            } else if chosen.count < chooser.limit {
+                                chosen.append(option.value)
+                            }
+                            chooser.choose(chosen)
+                        } label: {
+                            HStack(spacing: Theme.px(10)) {
+                                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: Theme.px(16), weight: .semibold))
+                                    .foregroundStyle(on ? Theme.ring : Theme.gray500)
+                                Text(option.label).font(Theme.font(Theme.base))
+                                Spacer()
+                            }
+                            .padding(.horizontal, Theme.px(14))
+                            .frame(height: Theme.px(44))
+                            .opacity(on || chosen.count < chooser.limit ? 1 : 0.5)
+                        }
+                        .buttonStyle(RowStyle(radius: Theme.px(8)))
+                        .focused($focused, equals: option.value)
+                    }
+                }
+                .padding(Theme.px(8))
+            }
+            .scrollClipDisabled(false)
         }
+        .pagePadding()
+        .padding(.vertical, Theme.px(24))
+        .frame(maxWidth: Theme.px(760), maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .foregroundStyle(.white)
         .onAppear {
             chosen = chooser.chosen
@@ -1205,51 +1215,64 @@ struct MultiChooserPanel: View {
     }
 }
 
-/// A list of choices over the dimmed page.
+/// A dedicated settings page for choosing one value.
 private struct ChooserPanel: View {
     let chooser: Chooser
     let done: () -> Void
     @FocusState private var focused: String?
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.6).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: Theme.px(12)) {
-                Text(chooser.title).font(Theme.font(Theme.xl, .semibold)).padding(.horizontal, Theme.px(8))
-                ScrollView {
-                    VStack(spacing: Theme.px(4)) {
-                        ForEach(chooser.options, id: \.value) { option in
-                            Button {
-                                chooser.choose(option.value)
-                                done()
-                            } label: {
-                                HStack(spacing: Theme.px(10)) {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: Theme.px(13), weight: .semibold))
-                                        .opacity(option.value == chooser.current ? 1 : 0)
-                                    Text(option.label).font(Theme.font(Theme.base))
-                                    Spacer()
-                                }
-                                .padding(.horizontal, Theme.px(14))
-                                .frame(height: Theme.px(44))
+        VStack(alignment: .leading, spacing: Theme.px(12)) {
+            SettingsChoiceHeader(title: chooser.title, back: done)
+            ScrollView {
+                VStack(spacing: Theme.px(4)) {
+                    ForEach(chooser.options, id: \.value) { option in
+                        Button {
+                            chooser.choose(option.value)
+                            done()
+                        } label: {
+                            HStack(spacing: Theme.px(10)) {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: Theme.px(13), weight: .semibold))
+                                    .opacity(option.value == chooser.current ? 1 : 0)
+                                Text(option.label).font(Theme.font(Theme.base))
+                                Spacer()
                             }
-                            .buttonStyle(RowStyle(radius: Theme.px(8)))
-                            .focused($focused, equals: option.value)
+                            .padding(.horizontal, Theme.px(14))
+                            .frame(height: Theme.px(44))
                         }
+                        .buttonStyle(RowStyle(radius: Theme.px(8)))
+                        .focused($focused, equals: option.value)
                     }
-                    .padding(Theme.px(8))
                 }
-                .scrollClipDisabled()
+                .padding(Theme.px(8))
             }
-            .padding(Theme.px(20))
-            .frame(width: Theme.px(480))
-            .frame(maxHeight: Theme.px(600))
-            .background(RoundedRectangle(cornerRadius: Theme.px(16), style: .continuous).fill(Color(white: 17 / 255)))
-            .overlay(RoundedRectangle(cornerRadius: Theme.px(16), style: .continuous).stroke(.white.opacity(0.1), lineWidth: Theme.px(1)))
+            .scrollClipDisabled(false)
         }
+        .pagePadding()
+        .padding(.vertical, Theme.px(24))
+        .frame(maxWidth: Theme.px(760), maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .foregroundStyle(.white)
-        .onAppear { focused = chooser.current }
+        .onAppear { focused = chooser.options.first { $0.value == chooser.current }?.value ?? chooser.options.first?.value }
         .onExitCommand(perform: done)
+    }
+}
+
+private struct SettingsChoiceHeader: View {
+    let title: String
+    let back: () -> Void
+
+    var body: some View {
+        HStack(spacing: Theme.px(16)) {
+            Button(action: back) {
+                Image(systemName: "chevron.left")
+            }
+            .buttonStyle(SoftPillStyle())
+            .accessibilityLabel(L("Back"))
+            Text(title).font(Theme.font(Theme.xl3, .bold))
+        }
+        .padding(.horizontal, Theme.px(8))
     }
 }
 

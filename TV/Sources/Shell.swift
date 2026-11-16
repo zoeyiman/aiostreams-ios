@@ -181,8 +181,13 @@ struct MainView: View {
         }
         // Back from another place's first page goes Home; from Home, it leaves the app.
         .onExitCommand(perform: exitAction)
+        .onChange(of: railFocus) { _, focused in
+            if top, let focused, Place.main.contains(focused), focused != place {
+                place = focused
+            }
+        }
         .onChange(of: prefs.hiddenSidebarTabs) { _, hidden in
-            if !top && hidden.contains(place) { place = .home }
+            if hidden.contains(place) { place = .home }
         }
         .overlay(alignment: .bottom) {
             if exitArmed {
@@ -239,7 +244,7 @@ struct MainView: View {
         let views: ItemsResult? = try? await client.get("/UserViews", ["userId": userId])
         guard !Task.isCancelled else { return }
         liveView = views?.items?.first { $0.collectionType == "livetv" }
-        if (!top && prefs.hiddenSidebarTabs.contains(place)) || (liveView == nil && place == .live) { place = .home }
+        if prefs.hiddenSidebarTabs.contains(place) || (liveView == nil && place == .live) { place = .home }
     }
 
     /// Screenshot mode only: opens the screen the launch asked for.
@@ -345,8 +350,8 @@ struct MainView: View {
             tab(.settings)
             tab(.account)
         }
-        .padding(.horizontal, Theme.px(40))
-        .padding(.top, Theme.px(16))
+        .padding(.horizontal, pageInset)
+        .padding(.top, Theme.px(14))
         // Never wider than the screen, which would push every page off its edges.
         .frame(width: UIScreen.main.bounds.width, height: Theme.topBarInset, alignment: .topLeading)
         .focusSection()
@@ -364,7 +369,9 @@ struct MainView: View {
 
     private func places(named: Bool) -> some View {
         HStack(spacing: Theme.px(2)) {
-            ForEach(Place.main.filter { $0 != .live || liveView != nil }) { tab($0, named: named || $0 == place) }
+            ForEach(prefs.sidebarOrder.filter {
+                Place.main.contains($0) && !prefs.hiddenSidebarTabs.contains($0) && ($0 != .live || liveView != nil)
+            }) { tab($0, named: named) }
         }
         .padding(Theme.px(4))
         .background(Capsule().fill(Color(white: 17 / 255).opacity(0.85)))
@@ -373,12 +380,19 @@ struct MainView: View {
 
     private func tab(_ item: Place, named: Bool = true) -> some View {
         Button {
-            select(item)
+            if Place.main.contains(item) {
+                place = item
+                leaveRail()
+            } else {
+                select(item)
+            }
         } label: {
             TopTab(item: item, current: item == place, named: named, avatar: avatarURL)
         }
         .buttonStyle(RailButtonStyle())
         .focused($railFocus, equals: item)
+        .accessibilityLabel(item.name)
+        .accessibilityAddTraits(item == place ? .isSelected : [])
     }
 
     private var rail: some View {

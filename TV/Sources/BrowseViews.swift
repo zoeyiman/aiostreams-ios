@@ -4,6 +4,9 @@ import SwiftUI
 enum Route: Hashable {
     case item(Item)
     case library(Item)
+    case collectionCovers(Item)
+    case latest(String)
+    case rowResults(title: String, items: [Item])
     case person(Person)
     case playlist(Item)
 }
@@ -15,6 +18,16 @@ extension View {
                 switch route {
                 case .item(let item): DetailView(item: item)
                 case .library(let view): LibraryView(view: view)
+                case .collectionCovers(let view): LibraryView(view: view, collectionCovers: true)
+                case .latest(let type):
+                    LibraryView(view: Item(id: "", name: type == "Movie" ? L("Latest movies") : L("Latest shows"),
+                                           collectionType: type == "Movie" ? "movies" : "tvshows"), latest: true)
+                case .rowResults(let title, let items):
+                    ScrollView {
+                        PageTitle(text: title)
+                        PosterGrid(items: items)
+                    }
+                    .edgeToEdge()
                 case .person(let person): PersonView(person: person)
                 case .playlist(let playlist): PlaylistView(playlist: playlist)
                 }
@@ -48,20 +61,18 @@ func openingGenre(_ client: JellyfinClient, userId: String, view: Item) async ->
     return (list.first { $0.name == "None" } ?? list.first)?.id
 }
 
-/// Beside the docked rail a page starts flush against it, with 40 px on the far side.
-let pageMargin = Theme.px(40)
-
-/// Room beside the rail for a focused card's ring, drawn just outside the card.
-let pageInset = Theme.px(8)
+let pageInset = Theme.px(24)
+let pageMargin = pageInset
+let pageTop = Theme.px(24)
 
 extension View {
-    /// A page's edges: 8 px off the rail, which a focused card's ring needs, and 40 px on the far side.
+    /// Keep titles, controls and content on the same horizontal guides.
     func pagePadding() -> some View { padding(.leading, pageInset).padding(.trailing, pageMargin) }
 
     /// The web app draws a TV's pages edge to edge. A scroll view otherwise insets its content
     /// by tvOS's TV-safe margins, even inside a screen that ignores them.
     func edgeToEdge() -> some View {
-        scrollClipDisabled().ignoresSafeArea()
+        ignoresSafeArea()
     }
 }
 
@@ -74,7 +85,7 @@ struct PageTitle: View {
             .font(Theme.font(Theme.xl3, .bold))
             .frame(maxWidth: .infinity, alignment: .leading)
             .pagePadding()
-            .padding(.top, Theme.px(40))
+            .padding(.top, pageTop)
     }
 }
 
@@ -88,6 +99,7 @@ struct HomeRow: Identifiable {
     /// Stills rather than posters: what's under way.
     var wide = false
     var collection = false
+    var browseRoute: Route?
 }
 
 struct ItemRow: View {
@@ -100,11 +112,16 @@ struct ItemRow: View {
                 if row.collection, row.library != nil {
                     Text(L("Collections")).foregroundStyle(Theme.gray400)
                 }
+                if let library = row.library {
+                    RowBrowseArrow(title: row.title, route: row.collection ? .collectionCovers(library) : .library(library))
+                } else {
+                    RowBrowseArrow(title: row.title, route: row.browseRoute ?? .rowResults(title: row.title, items: row.items))
+                }
             }
             .pagePadding()
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: Theme.px(16)) {
-                    ForEach(row.items) { item in
+                    ForEach(row.items.prefix(24)) { item in
                         // Posters in a row open into a preview; a grid's would push its columns out.
                         PosterLink(item: item, wide: row.wide, previews: !row.wide, showsTitle: row.collection)
                     }
@@ -119,6 +136,21 @@ struct ItemRow: View {
             .edgeToEdge()
         }
         .focusSection()
+    }
+}
+
+struct RowBrowseArrow: View {
+    let title: String
+    let route: Route
+
+    var body: some View {
+        NavigationLink(value: route) {
+            Image(systemName: "chevron.right")
+                .font(Theme.font(Theme.sm, .semibold))
+                .frame(width: Theme.px(28), height: Theme.px(28))
+        }
+        .buttonStyle(SoftPillStyle())
+        .accessibilityLabel(L("See all: %@", title))
     }
 }
 
@@ -350,15 +382,11 @@ struct PosterGrid: View {
     @EnvironmentObject private var prefs: Preferences
     let items: [Item]
     var onLast: (() -> Void)? = nil
-    /// As many columns as fit, rather than six, for a page that may be narrower than the screen.
-    var fitting = false
+    var wide = false
 
     private var columns: [GridItem] {
-        let size = PosterLink.width(prefs.posterSize)
-        if fitting { return [GridItem(.adaptive(minimum: size, maximum: size), spacing: Theme.px(16))] }
-        // Six across at the usual size; as many as the page held at it otherwise.
-        let count = Int((Theme.px(168) * 6 + Theme.px(16) * 5 + Theme.px(16)) / (size + Theme.px(16)))
-        return Array(repeating: GridItem(.fixed(size), spacing: Theme.px(16)), count: max(count, 1))
+        let size = wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)
+        return [GridItem(.adaptive(minimum: size, maximum: size), spacing: Theme.px(16))]
     }
 
     var body: some View {
@@ -368,7 +396,7 @@ struct PosterGrid: View {
             spacing: Theme.px(28)
         ) {
             ForEach(items) { item in
-                PosterLink(item: item)
+                PosterLink(item: item, wide: wide, showsTitle: wide)
                     .onAppear { if item.id == items.last?.id { onLast?() } }
             }
         }
@@ -401,7 +429,7 @@ struct DiscoverView: View {
                     .buttonStyle(SoftPillStyle())
                 }
                 .pagePadding()
-                .padding(.top, Theme.px(40))
+                .padding(.top, pageTop)
 
                 if !movies.isEmpty {
                     ItemRow(row: HomeRow(id: "discover.movies", title: L("Movies for you"), items: movies))
@@ -473,8 +501,8 @@ struct DiscoverView: View {
                 picks.append(item)
             }
         }
-        movies = Array(picks.filter { $0.type == "Movie" }.prefix(24))
-        shows = Array(picks.filter(\.isSeries).prefix(24))
+        movies = picks.filter { $0.type == "Movie" }
+        shows = picks.filter(\.isSeries)
         loaded = true
         if movies.isEmpty && shows.isEmpty {
             if (favouriteResult == nil && watchedResult == nil) || (!unique.isEmpty && suggestions.isEmpty) {
@@ -529,6 +557,8 @@ struct LibrariesView: View {
 struct LibraryView: View {
     @EnvironmentObject private var session: Session
     let view: Item
+    var collectionCovers = false
+    var latest = false
 
     private enum CollectionFilter: CaseIterable, Hashable {
         case all, movies, shows
@@ -578,7 +608,7 @@ struct LibraryView: View {
     }
 
     private static let page = 60
-    private var isBoxSet: Bool { view.type == "BoxSet" }
+    private var isBoxSet: Bool { view.type == "BoxSet" && !collectionCovers }
     private var query: Query { Query(collection: collectionFilter, filter: filter, sort: sort, descending: descending) }
 
     var body: some View {
@@ -587,10 +617,12 @@ struct LibraryView: View {
                 collectionHeader
             } else {
                 PageTitle(text: view.name ?? L("Library"))
-                SortFilterBar(filters: session.isStock ? ItemFilter.allCases : [.unplayed], filter: $filter,
-                              sorts: session.isStock ? SortKey.allCases : [], sort: $sort, descending: $descending)
+                if !collectionCovers && !latest {
+                    SortFilterBar(filters: session.isStock ? ItemFilter.allCases : [.unplayed], filter: $filter,
+                                  sorts: session.isStock ? SortKey.allCases : [], sort: $sort, descending: $descending)
+                }
             }
-            PosterGrid(items: items) { Task { await more() } }
+            PosterGrid(items: items, onLast: { Task { await more() } }, wide: collectionCovers)
             if loading { ProgressView().padding() }
             if let failure {
                 VStack(spacing: Theme.px(12)) {
@@ -640,7 +672,7 @@ struct LibraryView: View {
             .focusSection()
         }
         .pagePadding()
-        .padding(.top, Theme.px(40))
+        .padding(.top, pageTop)
     }
 
     private func reload() async {
@@ -680,16 +712,16 @@ struct LibraryView: View {
             }
             let result: ItemsResult = try await client.get("/Items", [
                 "userId": userId,
-                "ParentId": view.id,
+                "ParentId": latest ? nil : view.id,
                 "StartIndex": String(offset),
                 "Limit": String(Self.page),
-                "IncludeItemTypes": libraryTypes(view),
+                "IncludeItemTypes": collectionCovers ? "BoxSet" : libraryTypes(view),
                 "GenreIds": genre,
-                "Recursive": "true",
+                "Recursive": collectionCovers ? "false" : "true",
                 "EnableTotalRecordCount": "true",
                 "Filters": asked.filter?.jellyfin,
-                "SortBy": session.isStock ? asked.sort.fields : nil,
-                "SortOrder": session.isStock ? (asked.descending ? "Descending" : "Ascending") : nil,
+                "SortBy": latest ? "DateCreated" : session.isStock && !collectionCovers ? asked.sort.fields : nil,
+                "SortOrder": latest ? "Descending" : session.isStock && !collectionCovers ? (asked.descending ? "Descending" : "Ascending") : nil,
             ])
             guard !Task.isCancelled, id == loadID, asked == query else { return }
             let page = result.items ?? []
@@ -855,7 +887,7 @@ struct SearchView: View {
                 .focusSection()
             }
             if prefs.combineSearch {
-                PosterGrid(items: results.filter { !$0.isChannel }, fitting: true)
+                PosterGrid(items: results.filter { !$0.isChannel })
             } else {
                 // A section each, as the web app's search shows them unless they're combined.
                 let movies = results.filter { $0.type == "Movie" }
@@ -863,11 +895,11 @@ struct SearchView: View {
                 VStack(alignment: .leading, spacing: Theme.px(8)) {
                     if !movies.isEmpty {
                         Text(L("Movies")).font(Theme.font(Theme.xl, .semibold)).pagePadding()
-                        PosterGrid(items: movies, fitting: true)
+                        PosterGrid(items: movies)
                     }
                     if !shows.isEmpty {
                         Text(L("Shows")).font(Theme.font(Theme.xl, .semibold)).pagePadding()
-                        PosterGrid(items: shows, fitting: true)
+                        PosterGrid(items: shows)
                     }
                 }
             }

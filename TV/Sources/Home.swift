@@ -101,7 +101,9 @@ struct HomeView: View {
                 Color.clear.frame(height: Theme.px(16))
             }
             if !resuming.isEmpty {
-                WideRow(title: L("Continue watching"), items: resuming, play: play) { EmptyView() }
+                WideRow(title: L("Continue watching"), items: Array(resuming.prefix(24)), play: play) {
+                    RowBrowseArrow(title: L("Continue watching"), route: .rowResults(title: L("Continue watching"), items: resuming))
+                }
                     .environment(\.cardFocused, { _ in })
             }
             ForEach(catalogs) { row in
@@ -139,7 +141,7 @@ struct HomeView: View {
         }
         do {
             // Resume feeds the first Home row and also provides shortcuts for Top Shelf.
-            async let resume: ItemsResult? = try? client.get("/UserItems/Resume", ["userId": userId, "Limit": "24", "MediaTypes": "Video"])
+            async let resume: ItemsResult? = try? client.get("/UserItems/Resume", ["userId": userId, "Limit": "60", "MediaTypes": "Video"])
             async let nextUp: ItemsResult? = try? client.get("/Shows/NextUp", ["userId": userId, "Limit": "24", "EnableResumable": "false"])
             let result: ItemsResult = try await client.get("/UserViews", ["userId": userId])
             var views = (result.items ?? []).compactMap { view in homeCatalogKind(view).map { (view, $0) } }
@@ -193,7 +195,7 @@ struct HomeView: View {
                             guard let page else { return (offset, previous.first { $0.id == id }) }
                             let titles = (page.items ?? []).filter { $0.type == type }
                             guard !titles.isEmpty else { return (offset, nil) }
-                            return (offset, HomeRow(id: id, title: type == "Movie" ? L("Latest movies") : L("Latest shows"), items: titles))
+                            return (offset, HomeRow(id: id, title: type == "Movie" ? L("Latest movies") : L("Latest shows"), items: titles, browseRoute: .latest(type)))
                         }
                     }
                 }
