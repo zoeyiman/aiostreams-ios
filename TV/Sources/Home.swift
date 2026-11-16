@@ -44,11 +44,13 @@ struct HomeView: View {
     @State private var upcoming: [Item] = []
     @Environment(\.openRoute) private var openRoute
     @Environment(\.openPlace) private var openPlace
-    /// Favourite channels, then ones played here lately, with what's on: on a server with Live TV.
+    /// Favourite channels with what's on now.
     @State private var channels: [Item] = []
     @State private var airing: [String: Item] = [:]
     @State private var libraries: [HomeRow] = []
-    @State private var loading = true
+    @State private var collectionRows: [HomeRow] = []
+    @State private var loaded = false
+    @State private var loading = false
     @State private var error: String?
     @State private var choice: VersionChoice?
 
@@ -60,7 +62,9 @@ struct HomeView: View {
 
     var body: some View {
         Group {
-            if following && !hero.isEmpty {
+            if !loaded {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if following && !hero.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     HeroCarousel(items: hero, play: play, followed: followed ?? hero.first,
                                  height: prefs.heroMode == "corner" ? Theme.px(360) : Theme.px(456))
@@ -73,7 +77,8 @@ struct HomeView: View {
             }
         }
         .environment(\.cardFocused, { item in if following { followed = item } })
-        .task { if libraries.isEmpty && hero.isEmpty { await load() } }
+        .task(id: prefs.loaded) { if prefs.loaded && !loaded { await load() } }
+        .onChange(of: prefs.featured) { _, _ in Task { await load() } }
         .refreshOnReturn { await load() }
         .reloadOnWatchChange { await load() }
         .playFlow($choice) { Task { await load() } }
@@ -110,13 +115,17 @@ struct HomeView: View {
                     // Nothing to play yet, so a card opens its show.
                     WideRow(title: L("Upcoming"), items: upcoming, upcoming: true, play: openShow) { EmptyView() }
                 }
+                ForEach(collectionRows) { row in
+                    ItemRow(row: row)
+                }
                 ForEach(libraries) { row in
                     ItemRow(row: row)
                 }
                 if loading && hero.isEmpty && libraries.isEmpty {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, Theme.px(200))
                 }
-                if !loading && hero.isEmpty && resume.isEmpty && libraries.isEmpty {
+                if !loading && hero.isEmpty && resume.isEmpty && nextUp.isEmpty && upcoming.isEmpty
+                    && channels.isEmpty && collectionRows.isEmpty && libraries.isEmpty {
                     VStack(spacing: Theme.px(16)) {
                         Text(error ?? L("Nothing here yet. Add catalogs to your configuration."))
                             .font(Theme.font(Theme.base))
@@ -131,32 +140,23 @@ struct HomeView: View {
             .padding(.bottom, Theme.px(64))
     }
 
-    /// The Live TV row's channels, as the web app's: favourites, then those played here lately.
+    /// Home only shows favourite channels. Viewing history belongs to Live TV.
     private func loadChannels(client: JellyfinClient, userId: String) async {
         let limit = 20
         let favourites: ItemsResult? = try? await client.get("/LiveTv/Channels", [
             "userId": userId, "IsFavorite": "true", "Limit": String(limit), "AddCurrentProgram": "true",
         ])
-        let recentIds = RecentChannels.ids
-        var recents: [Item] = []
-        if !recentIds.isEmpty {
-            let found: ItemsResult? = try? await client.get("/Items", ["userId": userId, "Ids": recentIds.joined(separator: ",")])
-            let byId = Dictionary((found?.items ?? []).map { ($0.id, $0) }) { first, _ in first }
-            recents = recentIds.compactMap { byId[$0] }.filter(\.isChannel)
-        }
-        var seen = Set<String>()
-        let row = (favourites?.items ?? []) + recents
-        channels = Array(row.filter { seen.insert($0.id).inserted }.prefix(limit))
-        // What's on each now, in one ask, as recent channels come without it.
+        guard !Task.isCancelled, let favourites else { return }
+        channels = favourites.items ?? []
         guard !channels.isEmpty else { return }
         let now: ItemsResult? = try? await client.post("/LiveTv/Programs", body: [
             "UserId": userId, "ChannelIds": channels.map(\.id), "IsAiring": true, "Fields": ["Overview"],
         ])
+        guard !Task.isCancelled else { return }
         airing = Dictionary((now?.items ?? []).compactMap { programme in programme.channelId.map { ($0, programme) } }) { first, _ in first }
     }
 
     private func playChannel(_ channel: Item) {
-        RecentChannels.note(channel.id)
         choice = VersionChoice(item: channel, startMs: nil, mode: .straight)
     }
 
@@ -174,32 +174,37 @@ struct HomeView: View {
     }
 
     private func load() async {
-        guard let client = session.client, let userId = session.userId else { return }
+        guard prefs.loaded, !loading, let client = session.client, let userId = session.userId else { return }
+        let profile = session.profileID
         loading = true
         error = nil
-        defer { loading = false }
+        defer {
+            loading = false
+            if !Task.isCancelled { loaded = true }
+        }
         do {
             async let resumeResult: ItemsResult = client.get("/UserItems/Resume", ["userId": userId, "Limit": "24", "MediaTypes": "Video"])
             async let nextResult: ItemsResult = client.get("/Shows/NextUp", ["userId": userId, "Limit": "24", "EnableResumable": "false"])
             async let upcomingResult: ItemsResult = client.get("/Shows/Upcoming", ["userId": userId, "Limit": "24"])
             async let viewsResult: ItemsResult = client.get("/UserViews", ["userId": userId])
             // Assigning only on change keeps SwiftUI's views (and the focused card) in place on a refresh.
-            let newResume = (try? await resumeResult.items) ?? []
-            if newResume != resume { resume = newResume }
-            let newNextUp = (try? await nextResult.items) ?? []
-            if newNextUp != nextUp { nextUp = newNextUp }
-            saveTopShelf(client: client)
-            let newUpcoming = (try? await upcomingResult.items) ?? []
-            if newUpcoming != upcoming { upcoming = newUpcoming }
+            let newResume = try? await resumeResult.items
+            let newNextUp = try? await nextResult.items
+            let newUpcoming = try? await upcomingResult.items
             let allViews = try await viewsResult.items ?? []
             let views = allViews.filter(isBrowsable)
-            if allViews.contains(where: { $0.collectionType == "livetv" }) {
-                Task { await loadChannels(client: client, userId: userId) }
-            }
+            let hasLiveTV = allViews.contains { $0.collectionType == "livetv" }
+            let needsRootCollections = session.isStock && !views.contains { $0.collectionType == "boxsets" }
+            async let rootBoxSets: ItemsResult? = needsRootCollections ? try? client.get("/Items", [
+                "userId": userId, "IncludeItemTypes": "BoxSet", "Recursive": "true",
+                "Limit": "24", "SortBy": "SortName",
+            ]) : nil
 
             // Each library's head, in the configuration's order, as each arrives.
             var heads: [Int: (Item, [Item])] = [:]
-            await withTaskGroup(of: (Int, Item, [Item]).self) { group in
+            let previousRows = libraries
+            let previousCollections = collectionRows
+            await withTaskGroup(of: (Int, Item, [Item]?).self) { group in
                 for (index, view) in views.enumerated() {
                     group.addTask {
                         let genre = await openingGenre(client, userId: userId, view: view)
@@ -208,28 +213,53 @@ struct HomeView: View {
                             "ParentId": view.id,
                             "IncludeItemTypes": libraryTypes(view),
                             "GenreIds": genre,
-                            "Recursive": "true",
+                            "Recursive": view.collectionType == "boxsets" ? "false" : "true",
                             "Limit": "24",
                             "Fields": "Overview,Genres",
                         ])
-                        return (index, view, result?.items ?? [])
+                        return (index, view, result.map { $0.items ?? [] })
                     }
                 }
-                // First load: rows appear as each arrives. A refresh (e.g. back from playback) waits for
-                // all of them and swaps once, only if something changed, so the focused row isn't rebuilt
-                // and focus doesn't fall back to the top of Home.
-                let refreshing = !libraries.isEmpty
                 for await (index, view, items) in group {
-                    heads[index] = (view, items)
-                    if !refreshing { libraries = homeRows(heads) }
+                    let previous = (previousRows.first { $0.id == view.id }?.items ?? [])
+                        + (previousCollections.first { $0.id == "collections.\(view.id)" }?.items ?? [])
+                    heads[index] = (view, items ?? previous)
                 }
             }
+            let nativeBoxSets = await rootBoxSets?.items ?? []
+            guard !Task.isCancelled, profile == session.profileID else { return }
+            if let newResume, newResume != resume { resume = newResume }
+            if let newNextUp, newNextUp != nextUp { nextUp = newNextUp }
+            if let newUpcoming, newUpcoming != upcoming { upcoming = newUpcoming }
+            saveTopShelf(client: client)
+
+            var collections = heads.keys.sorted().compactMap { key -> HomeRow? in
+                guard let (view, items) = heads[key] else { return nil }
+                let covers = items.filter { $0.type == "BoxSet" }
+                guard !covers.isEmpty else { return nil }
+                return HomeRow(id: "collections.\(view.id)", title: view.name ?? L("Collections"), items: covers,
+                               library: view.collectionType == "boxsets" ? view : nil, wide: true, collection: true)
+            }
+            if !nativeBoxSets.isEmpty {
+                collections.append(HomeRow(id: "home.boxsets", title: L("Collections"), items: nativeBoxSets,
+                                           wide: true, collection: true))
+            }
+            if !sameRows(collections, collectionRows) { collectionRows = collections }
             let rows = homeRows(heads)
             if !sameRows(rows, libraries) { libraries = rows }
             let picks = heroPicks(views: views, heads: heads, client: client)
-            if hero.isEmpty || picks.map(\.id) != hero.map(\.id) { hero = picks }
+            if picks != hero {
+                hero = picks
+            }
+            loaded = true
+            if hasLiveTV {
+                await loadChannels(client: client, userId: userId)
+            } else {
+                channels = []
+                airing = [:]
+            }
         } catch let failure as JellyfinError where failure.status == 401 {
-            session.expired()
+            if !Task.isCancelled { session.expired(client) }
         } catch {
             self.error = error.localizedDescription
         }
@@ -259,8 +289,10 @@ struct HomeView: View {
     /// a backdrop.
     private func homeRows(_ heads: [Int: (Item, [Item])]) -> [HomeRow] {
         heads.keys.sorted().compactMap { key in
-            guard let entry = heads[key], !entry.1.isEmpty else { return nil }
-            return HomeRow(id: entry.0.id, title: entry.0.name ?? L("Library"), items: entry.1, library: entry.0)
+            guard let entry = heads[key] else { return nil }
+            let titles = entry.1.filter { $0.type != "BoxSet" }
+            guard !titles.isEmpty else { return nil }
+            return HomeRow(id: entry.0.id, title: entry.0.name ?? L("Library"), items: titles, library: entry.0)
         }
     }
 
@@ -297,8 +329,8 @@ struct HomeView: View {
         for index in 0..<(candidates.map(\.count).max() ?? 0) {
             for list in candidates where index < list.count && picks.count < heroMax {
                 let item = list[index]
-                guard !seen.contains(item.id), client.backdrop(item, height: 100) != nil,
-                      item.backdropImageTags?.isEmpty == false || item.parentBackdropImageTags?.isEmpty == false else { continue }
+                guard item.type != "BoxSet", !item.isChannel, !seen.contains(item.id), client.backdrop(item, height: 100) != nil,
+                      item.backdropImageTags?.isEmpty == false || item.parentBackdropImageTags?.isEmpty == false || item.seriesId != nil else { continue }
                 seen.insert(item.id)
                 picks.append(item)
             }
@@ -321,7 +353,8 @@ struct HeroCarousel: View {
     var followed: Item? = nil
     var height: CGFloat = HeroCarousel.height
 
-    @State private var index = 0
+    @State private var selectedID: String?
+    private var index: Int { items.firstIndex { $0.id == selectedID } ?? 0 }
     @FocusState private var focus: HeroAction?
     /// When the hero last turned, as the new title's details take a moment to take focus.
     @State private var turnedAt = Date.distantPast
@@ -349,13 +382,12 @@ struct HeroCarousel: View {
         .clipped()
         .padding(.top, -Theme.topBarInset)
         .animation(.easeInOut(duration: 0.6), value: index)
-        .task(id: "\(index)-\(focus == nil)") {
+        .task(id: "\(item.id)-\(items.count)-\(focus == nil)-\(prefs.heroSeconds)") {
             guard focus == nil, items.count > 1, followed == nil else { return }
             try? await Task.sleep(for: .seconds(prefs.heroSeconds))
             guard !Task.isCancelled, focus == nil else { return }
-            index = (index + 1) % items.count
+            selectedID = items[(index + 1) % items.count].id
         }
-        .onChange(of: items.map(\.id)) { _, _ in index = 0 }
         // Background from artwork: the hero's title, turning with it.
         .washed(by: item)
         // Right past More info, or left past the first button, focus lands on a slip beside them,
@@ -368,7 +400,8 @@ struct HeroCarousel: View {
                 settle(on: items[index].playable ? .play : .info)
                 return
             }
-            index = now == .next ? (index + 1) % items.count : (index - 1 + items.count) % items.count
+            let next = now == .next ? (index + 1) % items.count : (index - 1 + items.count) % items.count
+            selectedID = items[next].id
             turnedAt = Date()
             settle(on: now == .next ? (items[index].playable ? .play : .info) : .info)
         }
@@ -393,41 +426,13 @@ struct HeroCarousel: View {
             .focused($focus, equals: action)
     }
 
-    /// The backdrop sits right, no wider than 2.6 times its height, fading in from the left.
+    /// Keep the entire backdrop in frame and hold its picture until the next one loads.
     private var backdrop: some View {
         GeometryReader { geometry in
             let width = min(geometry.size.width, height * 2.6)
-            RemoteImage(url: session.client?.backdrop(item, height: 1080))
+            HeroArtwork(url: session.client?.backdrop(item, height: 1080))
                 .frame(width: width, height: height)
-                .mask(
-                    LinearGradient(
-                        stops: [.init(color: .clear, location: 0), .init(color: .black, location: Theme.px(192) / width)],
-                        startPoint: .start,
-                        endPoint: .end
-                    )
-                )
-                // Over the artwork, it fades out downwards and towards the details too.
-                .mask(
-                    LinearGradient(
-                        stops: overArtwork
-                            ? [.init(color: .clear, location: 0), .init(color: .black, location: 0.5)]
-                            : [.init(color: .black, location: 0), .init(color: .black, location: 1)],
-                        startPoint: .bottom,
-                        endPoint: .top
-                    )
-                )
-                .mask(
-                    LinearGradient(
-                        stops: overArtwork
-                            ? [.init(color: .clear, location: 0), .init(color: .black, location: 0.6)]
-                            : [.init(color: .black, location: 0), .init(color: .black, location: 1)],
-                        startPoint: .start,
-                        endPoint: .end
-                    )
-                )
                 .frame(maxWidth: .infinity, alignment: .trailing)
-                .id(item.id)
-                .transition(.opacity)
         }
     }
 
@@ -555,6 +560,34 @@ struct TitleLogo: View {
 }
 
 /// `2025 • ★ 8.3 • Drama, Crime`, or an episode's code and name for the first part.
+private struct HeroArtwork: View {
+    let url: URL?
+    @State private var image: UIImage?
+
+    var body: some View {
+        Color.clear
+            .overlay {
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFit()
+                }
+            }
+            .task(id: url) {
+                guard let url else { image = nil; return }
+                do {
+                    let (data, response) = try await URLSession.shared.data(from: url)
+                    guard !Task.isCancelled else { return }
+                    if let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) {
+                        image = UIImage(data: data)
+                    } else {
+                        image = nil
+                    }
+                } catch {
+                    if !Task.isCancelled { image = nil }
+                }
+            }
+    }
+}
+
 struct HeroMeta: View {
     let item: Item
 

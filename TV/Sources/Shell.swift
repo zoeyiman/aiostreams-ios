@@ -156,7 +156,11 @@ struct MainView: View {
         .animation(.easeOut(duration: 0.2), value: open)
         .playFlow($choice, restoresPictureInPicture: true) { NotificationCenter.default.post(name: .watchStateChanged, object: nil) }
         .task { await findLiveTV() }
-        .task { await session.readServerKind() }
+        .task {
+            await session.readServerKind()
+            guard !Task.isCancelled, let client = session.client, let userId = session.userId else { return }
+            await prefs.load(client: client, userId: userId)
+        }
         // Signed out, or asked who's watching: other devices can't reach this one meanwhile.
         .onDisappear { ServerEvents.shared.stop() }
         .onReceive(NotificationCenter.default.publisher(for: DeepLink.opened)) { _ in
@@ -166,6 +170,7 @@ struct MainView: View {
             await startOnPage()
             await followLink()
             guard let client = session.client, let userId = session.userId else { return }
+            guard !Task.isCancelled else { return }
             LiveReminders.shared.load(userId: userId)
             // A watch party's titles open here as the party plays them.
             PartyFollow.shared.attach(session)
@@ -173,11 +178,13 @@ struct MainView: View {
             ServerEvents.shared.skipStep = Double(prefs.seekStep)
             ServerEvents.shared.pageHandler = { command in Task { await remote(command) } }
             ServerEvents.shared.start(client: client)
-            await prefs.load(client: client, userId: userId)
             await openDemoScreen()
         }
         // Back from another place's first page goes Home; from Home, it leaves the app.
         .onExitCommand(perform: exitAction)
+        .onChange(of: prefs.hiddenSidebarTabs) { _, hidden in
+            if !top && hidden.contains(place) { place = .home }
+        }
         .overlay(alignment: .bottom) {
             if exitArmed {
                 Text(L("Press Back again to leave"))
@@ -231,8 +238,9 @@ struct MainView: View {
     private func findLiveTV() async {
         guard let client = session.client, let userId = session.userId else { return }
         let views: ItemsResult? = try? await client.get("/UserViews", ["userId": userId])
+        guard !Task.isCancelled else { return }
         liveView = views?.items?.first { $0.collectionType == "livetv" }
-        if liveView == nil && place == .live { place = .home }
+        if (!top && prefs.hiddenSidebarTabs.contains(place)) || (liveView == nil && place == .live) { place = .home }
     }
 
     /// Screenshot mode only: opens the screen the launch asked for.
@@ -385,7 +393,9 @@ struct MainView: View {
             Rectangle().fill(.white.opacity(0.1)).frame(height: Theme.px(1))
                 .padding(.horizontal, Theme.px(12))
                 .padding(.vertical, Theme.px(4))
-            ForEach(Place.main.filter { $0 != .live || liveView != nil }) { entry($0) }
+            ForEach(Place.main.filter { !prefs.hiddenSidebarTabs.contains($0) && ($0 != .live || liveView != nil) }) {
+                entry($0)
+            }
             Spacer(minLength: 0)
             entry(.settings)
         }
@@ -435,6 +445,7 @@ struct MainView: View {
         .buttonStyle(RailButtonStyle())
         .focused($railFocus, equals: item)
         .prefersDefaultFocus(current, in: railScope)
+        .accessibilityAddTraits(current ? .isSelected : [])
     }
 
     private var avatarURL: URL? {
@@ -483,12 +494,12 @@ private struct RailEntry: View {
         }
         .padding(.horizontal, Theme.px(16))
         .frame(width: Self.width, height: Theme.px(48), alignment: .leading)
-        .foregroundStyle(current || focused ? Color.white : Theme.gray400)
+        .foregroundStyle(focused ? Color.black : current ? Color.white : Theme.gray400)
         // Drawn past the button's own frame, which focus moves are measured from. The page you're
         // on is filled; where the remote is gets the app's focus ring, so the two never look alike.
         .background(alignment: .leading) {
             Capsule()
-                .fill(Color.white.opacity(current ? 0.12 : 0))
+                .fill(focused ? .white : current ? Theme.brand500.opacity(0.65) : .clear)
                 .frame(width: open ? Self.openWidth : Self.width, height: Theme.px(48))
                 .overlay {
                     if focused {
@@ -501,8 +512,8 @@ private struct RailEntry: View {
         .overlay(alignment: .leading) {
             if open {
                 Text(item.name)
-                    .font(Theme.font(Theme.base, .medium))
-                    .foregroundStyle(current || focused ? Color.white : Theme.gray400)
+                    .font(Theme.font(Theme.base, focused || current ? .semibold : .medium))
+                    .foregroundStyle(focused ? Color.black : current ? Color.white : Theme.gray400)
                     .lineLimit(1)
                     .fixedSize()
                     .offset(x: Theme.px(56))

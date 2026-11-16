@@ -28,12 +28,13 @@ final class Preferences: ObservableObject {
            let saved = prefs["CustomPrefs"] as? [String: Any] {
             custom = saved.compactMapValues { $0 as? String }
         }
+        guard !Task.isCancelled else { return }
         Theme.apply(accent: accentColor, background: backgroundColor)
         AppLanguage.apply(text("language", "auto"))
         if let me = try? await client.json("GET", "/Users/Me") {
             configuration = me["Configuration"] as? [String: Any] ?? [:]
         }
-        loaded = true
+        if !Task.isCancelled { loaded = true }
     }
 
     // MARK: Synced settings
@@ -191,6 +192,19 @@ final class Preferences: ObservableObject {
         )
     }
 
+    @Published private(set) var hiddenSidebarTabs = Set(
+        (UserDefaults.standard.stringArray(forKey: "interface.hiddenSidebarTabs") ?? []).compactMap(Place.init(rawValue:))
+    )
+
+    func toggleSidebarTab(_ place: Place) {
+        if hiddenSidebarTabs.contains(place) {
+            hiddenSidebarTabs.remove(place)
+        } else {
+            hiddenSidebarTabs.insert(place)
+        }
+        UserDefaults.standard.set(hiddenSidebarTabs.map(\.rawValue).sorted(), forKey: "interface.hiddenSidebarTabs")
+    }
+
     var heroSeconds: Double { number("heroSeconds", 9) }
 
     // MARK: Interface, under the web app's keys (lib/settings)
@@ -343,7 +357,7 @@ final class Preferences: ObservableObject {
     /// The web app's subtitle style, in the overlay's units (lib/subtitles/style.ts).
     var subtitleLook: SubtitleLook {
         var look = SubtitleLook()
-        look.scale = ["small": 0.8, "normal": 1, "large": 1.25, "huge": 1.5][text("subtitleSize", "normal")] ?? 1
+        look.scale = 0.8 * (["small": 0.8, "normal": 1, "large": 1.25, "huge": 1.5][text("subtitleSize", "normal")] ?? 1)
         look.bold = flag("subtitleBold", false)
         look.color = JSON.color(text("subtitleColor", "#ffffff")) ?? .white
         look.outlineColor = JSON.color(text("subtitleOutlineColor", "#000000")) ?? .black
@@ -676,6 +690,13 @@ struct SettingsView: View {
                 synced(L("Time format"), key: "timeFormat", fallback: "auto",
                        options: [(L("Automatic"), "auto"), (L("12-hour"), "12"), (L("24-hour"), "24")])
             }
+            section(L("Sidebar tabs"), note: nil) {
+                ForEach(Place.main.filter { $0 != .home }) { place in
+                    row(place.name, value: prefs.hiddenSidebarTabs.contains(place) ? L("Hidden") : L("Shown")) {
+                        prefs.toggleSidebarTab(place)
+                    }
+                }
+            }
         case .theme:
             section(nil, note: L("Shared with the web app.")) {
                 synced(L("Accent colour"), key: "accentColor", fallback: "",
@@ -699,11 +720,16 @@ struct SettingsView: View {
                     Session.askWho = askWho
                 }
                 note(L("Also when you come back to it after half an hour. Whoever was watching carries on without their PIN."))
-                HStack(spacing: Theme.px(8)) {
-                    Button(L("Switch user")) { session.signOut() }.buttonStyle(SoftPillStyle())
-                    Button(L("Change server")) { session.forgetServer() }.buttonStyle(SoftPillStyle())
+            }
+            section(L("Profiles"), note: nil) {
+                ForEach(session.profiles) { profile in
+                    row(profile.label, value: profile.id == session.profileID ? L("Active") : "") {
+                        if profile.id != session.profileID { session.switchProfile(profile) }
+                    }
                 }
-                .padding(.top, Theme.px(4))
+                row(L("Add user on this server"), value: "") { session.addProfile(onSameServer: true) }
+                row(L("Add another server"), value: "") { session.addProfile(onSameServer: false) }
+                row(L("Sign out of this profile"), value: "") { session.signOut() }
             }
         case .about:
             section(nil, note: nil) {

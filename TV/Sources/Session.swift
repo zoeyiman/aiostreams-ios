@@ -17,6 +17,27 @@ final class Session: ObservableObject {
     /// filter as asked, where an AIOStreams catalog keeps its own order.
     @Published private(set) var isStock = false
     @Published private(set) var userName: String?
+    @Published private(set) var profiles: [Profile] = []
+    @Published private(set) var profileID: UUID?
+    private var serverKindKnown = false
+
+    struct Profile: Codable, Identifiable {
+        let id: UUID
+        let address: URL
+        let serverName: String?
+        let userID: String
+        let userName: String?
+        let isStock: Bool
+        let serverKindKnown: Bool
+
+        var label: String {
+            let server = serverName ?? address.host ?? address.absoluteString
+            let name = userName.map { "\($0) · \(server)" } ?? server
+            return serverKindKnown ? "\(name) · \(isStock ? L("Jellyfin") : L("AIOStreams"))" : name
+        }
+
+        var tokenKey: String { "profile.\(id.uuidString).token" }
+    }
     /// Who's watching is asked before the pages show (Ask when the app opens).
     @Published private(set) var asking = false
     private var leftAt: Date?
@@ -33,19 +54,35 @@ final class Session: ObservableObject {
     private let defaults = UserDefaults.standard
 
     init() {
+        if let data = defaults.data(forKey: Keys.profiles),
+           let saved = try? JSONDecoder().decode([Profile].self, from: data) {
+            profiles = saved
+        }
+        if let active = defaults.string(forKey: Keys.activeProfile),
+           let profile = profiles.first(where: { $0.id.uuidString == active }),
+           let token = Keychain.read(profile.tokenKey) {
+            activate(profile, token: token)
+            asking = Self.askWho
+            return
+        }
+
         guard let saved = defaults.string(forKey: Keys.server), let base = URL(string: saved) else { return }
         serverName = defaults.string(forKey: Keys.serverName)
-        var client = Self.makeClient(base)
+        client = Self.makeClient(base)
+        stage = .needsSignIn
+        // Move an existing install's single login into the profile picker.
         if let token = Keychain.read(Keys.token), let user = defaults.string(forKey: Keys.userId) {
-            client.token = token
-            userId = user
-            userName = defaults.string(forKey: Keys.userName)
-            stage = .signedIn
+            saveProfile(address: base, user: user, name: defaults.string(forKey: Keys.userName), token: token)
+            if let profile = profiles.first(where: { $0.id == profileID }), Keychain.read(profile.tokenKey) == token {
+                Keychain.delete(Keys.token)
+                defaults.removeObject(forKey: Keys.userId)
+                defaults.removeObject(forKey: Keys.userName)
+                let legacy = defaults.stringArray(forKey: "live.recent") ?? []
+                defaults.set(legacy, forKey: RecentChannels.key(for: profile.id))
+                defaults.removeObject(forKey: "live.recent")
+            }
             asking = Self.askWho
-        } else {
-            stage = .needsSignIn
         }
-        self.client = client
     }
 
     private static func makeClient(_ base: URL) -> JellyfinClient {
@@ -54,9 +91,18 @@ final class Session: ObservableObject {
 
     /// Reads whether the server is AIOStreams or plain Jellyfin.
     func readServerKind() async {
-        guard let client else { return }
-        if let info: PublicSystemInfo = try? await client.get("/System/Info/Public") {
+        guard !serverKindKnown, let client, let id = profileID else { return }
+        if let info: PublicSystemInfo = try? await client.get("/System/Info/Public"),
+           !Task.isCancelled, profileID == id, self.client?.token == client.token {
             isStock = info.aiostreams == nil
+            serverKindKnown = true
+            if let index = profiles.firstIndex(where: { $0.id == id }) {
+                let previous = profiles[index]
+                profiles[index] = Profile(id: id, address: previous.address, serverName: previous.serverName,
+                                          userID: previous.userID, userName: previous.userName, isStock: isStock,
+                                          serverKindKnown: true)
+                persistProfiles()
+            }
         }
     }
 
@@ -68,6 +114,8 @@ final class Session: ObservableObject {
         let client = Self.makeClient(base)
         let info: PublicSystemInfo = try await client.get("/System/Info/Public")
         self.client = client
+        isStock = info.aiostreams == nil
+        serverKindKnown = true
         serverName = info.serverName
         defaults.set(base.absoluteString, forKey: Keys.server)
         defaults.set(info.serverName, forKey: Keys.serverName)
@@ -76,29 +124,90 @@ final class Session: ObservableObject {
     }
 
     func signIn(_ result: AuthResult) {
-        guard var client else { return }
-        client.token = result.accessToken
-        self.client = client
-        userId = result.user.id
-        userName = result.user.name
-        Keychain.write(Keys.token, result.accessToken)
-        defaults.set(result.user.id, forKey: Keys.userId)
-        defaults.set(result.user.name, forKey: Keys.userName)
+        guard let client else { return }
+        saveProfile(address: client.base, user: result.user.id, name: result.user.name, token: result.accessToken)
+    }
+
+    private func saveProfile(address: URL, user: String, name: String?, token: String) {
+        let id = profiles.first { $0.address == address && $0.userID == user }?.id ?? UUID()
+        let profile = Profile(id: id, address: address, serverName: serverName, userID: user,
+                              userName: name, isStock: isStock, serverKindKnown: serverKindKnown)
+        Keychain.write(profile.tokenKey, token)
+        if let index = profiles.firstIndex(where: { $0.id == id }) {
+            profiles[index] = profile
+        } else {
+            profiles.append(profile)
+        }
+        persistProfiles()
+        activate(profile, token: token)
+    }
+
+    private func persistProfiles() {
+        if let data = try? JSONEncoder().encode(profiles) { defaults.set(data, forKey: Keys.profiles) }
+    }
+
+    private func activate(_ profile: Profile, token: String) {
+        var next = Self.makeClient(profile.address)
+        next.token = token
+        client = next
+        userId = profile.userID
+        userName = profile.userName
+        serverName = profile.serverName
+        isStock = profile.isStock
+        serverKindKnown = profile.serverKindKnown
+        defaults.set(profile.id.uuidString, forKey: Keys.activeProfile)
+        defaults.set(profile.address.absoluteString, forKey: Keys.server)
+        defaults.set(profile.serverName, forKey: Keys.serverName)
+        profileID = profile.id
         stage = .signedIn
         asking = false
+    }
+
+    func switchProfile(_ profile: Profile) {
+        if let token = Keychain.read(profile.tokenKey) {
+            activate(profile, token: token)
+        } else {
+            addProfile(onSameServer: false)
+            client = Self.makeClient(profile.address)
+            defaults.set(profile.address.absoluteString, forKey: Keys.server)
+            defaults.set(profile.serverName, forKey: Keys.serverName)
+            serverName = profile.serverName
+            isStock = profile.isStock
+            serverKindKnown = profile.serverKindKnown
+            stage = .needsSignIn
+        }
+    }
+
+    func addProfile(onSameServer: Bool) {
+        profileID = nil
+        defaults.removeObject(forKey: Keys.activeProfile)
+        userId = nil
+        userName = nil
+        asking = false
+        if onSameServer, let client {
+            self.client = Self.makeClient(client.base)
+            stage = .needsSignIn
+        } else {
+            client = nil
+            serverName = nil
+            serverKindKnown = false
+            isStock = false
+            defaults.removeObject(forKey: Keys.server)
+            defaults.removeObject(forKey: Keys.serverName)
+            stage = .needsServer
+        }
     }
 
     func signOut() {
         if let client, client.token != nil {
             Task { await client.fire("/Sessions/Logout", body: [:]) }
         }
-        client?.token = nil
-        userId = nil
-        userName = nil
-        Keychain.delete(Keys.token)
-        defaults.removeObject(forKey: Keys.userId)
-        defaults.removeObject(forKey: Keys.userName)
-        stage = client == nil ? .needsServer : .needsSignIn
+        if let profile = profiles.first(where: { $0.id == profileID }) {
+            Keychain.delete(profile.tokenKey)
+            profiles.removeAll { $0.id == profile.id }
+            persistProfiles()
+        }
+        addProfile(onSameServer: client != nil)
     }
 
     /// Whoever was watching carries on, without signing in again.
@@ -114,16 +223,12 @@ final class Session: ObservableObject {
     }
 
     func forgetServer() {
-        signOut()
-        client = nil
-        serverName = nil
-        defaults.removeObject(forKey: Keys.server)
-        defaults.removeObject(forKey: Keys.serverName)
-        stage = .needsServer
+        addProfile(onSameServer: false)
     }
 
     /// The token expired or was revoked on the configure page.
-    func expired() {
+    func expired(_ rejected: JellyfinClient) {
+        guard client?.base == rejected.base, client?.token == rejected.token else { return }
         AppLog.warn("session", "the server no longer accepts this sign-in")
         signOut()
     }
@@ -134,6 +239,8 @@ final class Session: ObservableObject {
         static let userId = "user.id"
         static let userName = "user.name"
         static let token = "user.token"
+        static let profiles = "account.profiles"
+        static let activeProfile = "account.activeProfile"
     }
 }
 
@@ -155,9 +262,11 @@ enum Keychain {
     }
 
     static func write(_ key: String, _ value: String) {
-        delete(key)
+        let data = Data(value.utf8)
+        let status = SecItemUpdate(query(key) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        guard status == errSecItemNotFound else { return }
         var item = query(key)
-        item[kSecValueData as String] = Data(value.utf8)
+        item[kSecValueData as String] = data
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         SecItemAdd(item as CFDictionary, nil)
     }

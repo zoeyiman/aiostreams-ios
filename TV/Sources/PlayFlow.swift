@@ -57,6 +57,7 @@ struct PlayFlow: ViewModifier {
     var finished: () -> Void = {}
     /// The one flow, the app's own, that opens the player again from Picture in Picture.
     var restoresPictureInPicture = false
+    var playerVisibility: (Bool) -> Void = { _ in }
 
     @State private var playing: PlayRequest?
     /// The model Picture in Picture hands back, for the player opened again on it.
@@ -138,6 +139,7 @@ struct PlayFlow: ViewModifier {
                 // The page stays in sight, dimmed, behind the panel.
                 .presentationBackground(.clear)
             }
+            .onChange(of: playing != nil) { _, visible in playerVisibility(visible) }
             .fullScreenCover(item: $playing, onDismiss: {
                 restored = nil
                 if let next = partyNext {
@@ -199,8 +201,10 @@ struct PlayFlow: ViewModifier {
 
 extension View {
     func playFlow(_ choice: Binding<VersionChoice?>, restoresPictureInPicture: Bool = false,
+                  playerVisibility: @escaping (Bool) -> Void = { _ in },
                   finished: @escaping () -> Void = {}) -> some View {
-        modifier(PlayFlow(choice: choice, finished: finished, restoresPictureInPicture: restoresPictureInPicture))
+        modifier(PlayFlow(choice: choice, finished: finished, restoresPictureInPicture: restoresPictureInPicture,
+                          playerVisibility: playerVisibility))
     }
 }
 

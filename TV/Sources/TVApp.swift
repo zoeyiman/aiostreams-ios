@@ -1,11 +1,10 @@
 import AVFoundation
 import SwiftUI
+import TVServices
 
 @main
 struct AIOStreamsTVApp: App {
     @StateObject private var session = Session()
-    @StateObject private var prefs = Preferences()
-    @StateObject private var wash = ArtWash()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -15,30 +14,64 @@ struct AIOStreamsTVApp: App {
 
     var body: some Scene {
         WindowGroup {
-            Group {
-                switch session.stage {
-                case .needsServer: ServerView()
-                case .needsSignIn: SignInView()
-                case .signedIn:
-                    if session.asking { SignInView() } else { MainView() }
+            ProfileContent()
+                .id(session.profileID)
+                .environmentObject(session)
+                .task { await DemoMode.start(session) }
+                .onOpenURL { DeepLink.open($0) }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .background { session.left() } else if phase == .active { session.returned() }
                 }
+                .onChange(of: session.profileID) { _, _ in
+                    TVPictureInPicture.shared.stop()
+                    TopShelfStore.save(.init(sections: []))
+                    TVTopShelfContentProvider.topShelfContentDidChange()
+                }
+        }
+    }
+}
+
+private struct ProfileContent: View {
+    @EnvironmentObject private var session: Session
+    @StateObject private var prefs = Preferences()
+    @StateObject private var wash = ArtWash()
+
+    var body: some View {
+        Group {
+            switch session.stage {
+            case .needsServer: ServerView()
+            case .needsSignIn: SignInView().id(session.client?.base)
+            case .signedIn:
+                if session.asking { SignInView() } else { MainView() }
             }
-            // The web app's theme colours and language, once they've loaded.
-            .id(prefs.themeKey)
-            .environment(\.locale, AppLanguage.locale)
-            .environment(\.layoutDirection, AppLanguage.rightToLeft ? .rightToLeft : .leftToRight)
-            .environmentObject(session)
-            .environmentObject(prefs)
-            .environmentObject(wash)
-            .preferredColorScheme(.dark)
-            // Screenshot mode only: the demo server's sign-in.
-            .task { await DemoMode.start(session) }
-            // From Top Shelf: a title's page, or playing it.
-            .onOpenURL { DeepLink.open($0) }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .background { session.left() } else if phase == .active { session.returned() }
+        }
+        .id(prefs.themeKey)
+        .environment(\.locale, AppLanguage.locale)
+        .environment(\.layoutDirection, AppLanguage.rightToLeft ? .rightToLeft : .leftToRight)
+        .environmentObject(prefs)
+        .environmentObject(wash)
+        .preferredColorScheme(.dark)
+        .tint(Theme.ring)
+    }
+}
+
+/// Saved accounts can also be reached before signing in to a new server.
+private struct SavedProfiles: View {
+    @EnvironmentObject private var session: Session
+
+    var body: some View {
+        if !session.profiles.isEmpty {
+            ScrollView(.horizontal) {
+                HStack {
+                    ForEach(session.profiles) { profile in
+                        Button(profile.label) { session.switchProfile(profile) }
+                            .buttonStyle(SoftPillStyle(selected: profile.id == session.profileID))
+                    }
+                }
+                .padding(Theme.px(8))
             }
-            .tint(Theme.ring)
+            .frame(maxWidth: Theme.px(760))
+            .focusSection()
         }
     }
 }
@@ -103,6 +136,7 @@ struct ServerView: View {
                 Button(working ? L("Connecting…") : L("Connect"), action: connect)
                     .buttonStyle(PrimaryPillStyle())
                     .disabled(working || address.trimmingCharacters(in: .whitespaces).isEmpty)
+                if !working { SavedProfiles() }
                 ErrorText(text: error)
             }
             .foregroundStyle(.white)
@@ -202,6 +236,7 @@ struct SignInView: View {
             .buttonStyle(SoftPillStyle())
             .padding(.top, Theme.px(8))
             .focusSection()
+            SavedProfiles()
         }
     }
 
@@ -302,6 +337,7 @@ struct SignInView: View {
                             "/Users/AuthenticateWithQuickConnect",
                             body: ["Secret": started.secret]
                         )
+                        guard !Task.isCancelled, session.client?.base == client.base else { return }
                         session.signIn(result)
                         return
                     }
@@ -328,6 +364,7 @@ struct SignInView: View {
                     "/Users/AuthenticateByName",
                     body: ["Username": name, "Pw": password]
                 )
+                guard session.client?.base == client.base, session.stage != .signedIn || session.asking else { return }
                 poll?.cancel()
                 session.signIn(result)
             } catch let failure as JellyfinError where failure.status == 401 {

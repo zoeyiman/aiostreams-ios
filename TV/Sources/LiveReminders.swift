@@ -78,7 +78,6 @@ struct ReminderHost: View {
                     HStack(spacing: Theme.px(8)) {
                         Button {
                             self.due = nil
-                            RecentChannels.note(due.channelId)
                             watch(Item(id: due.channelId, name: due.channelName, type: "TvChannel"))
                         } label: {
                             Label(L("Watch"), systemImage: "play.fill")

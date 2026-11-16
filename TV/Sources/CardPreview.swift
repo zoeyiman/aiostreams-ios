@@ -83,12 +83,13 @@ struct CardPreview: View {
 }
 
 /// An AVPlayer's picture, filling its frame.
-private struct TrailerLayer: UIViewRepresentable {
+struct TrailerLayer: UIViewRepresentable {
     let player: AVPlayer
+    var gravity: AVLayerVideoGravity = .resizeAspectFill
 
     func makeUIView(context: Context) -> LayerView {
         let view = LayerView()
-        view.playerLayer.videoGravity = .resizeAspectFill
+        view.playerLayer.videoGravity = gravity
         view.playerLayer.player = player
         return view
     }

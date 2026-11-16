@@ -87,6 +87,7 @@ struct HomeRow: Identifiable {
     var library: Item?
     /// Stills rather than posters: what's under way.
     var wide = false
+    var collection = false
 }
 
 struct ItemRow: View {
@@ -94,17 +95,29 @@ struct ItemRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.px(12)) {
-            Text(row.title)
-                .font(Theme.font(Theme.xl, .semibold))
-                .pagePadding()
+            Group {
+                if row.collection, let library = row.library {
+                    NavigationLink(value: Route.library(library)) {
+                        HStack(spacing: Theme.px(8)) {
+                            Text(row.title).font(Theme.font(Theme.xl, .semibold))
+                            Text(L("Collections")).foregroundStyle(Theme.gray400)
+                            Image(systemName: "chevron.right").foregroundStyle(Theme.gray400)
+                        }
+                    }
+                    .buttonStyle(RowStyle())
+                } else {
+                    Text(row.title).font(Theme.font(Theme.xl, .semibold))
+                }
+            }
+            .pagePadding()
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                     ForEach(row.items) { item in
                         // Posters in a row open into a preview; a grid's would push its columns out.
-                        PosterLink(item: item, wide: row.wide, previews: !row.wide)
+                        PosterLink(item: item, wide: row.wide, previews: !row.wide, showsTitle: row.collection)
                     }
                     // The whole library, from the end of its row.
-                    if let library = row.library {
+                    if !row.collection, let library = row.library {
                         SeeAllCard(library: library, wide: row.wide)
                     }
                 }
@@ -190,6 +203,7 @@ struct PosterLink: View {
     var wide: Bool = false
     /// Opens into a card preview when focus rests on it (Settings > Interface > Card previews).
     var previews = false
+    var showsTitle = false
     @State private var opened = false
 
     /// A poster's width at the web app's Poster size: small, medium or large.
@@ -212,6 +226,12 @@ struct PosterLink: View {
 
     private var imageURL: URL? {
         guard let client = session.client else { return nil }
+        if item.type == "BoxSet" {
+            let height = Int(size.height * 2)
+            return item.tag("Primary") != nil
+                ? client.poster(item, height: height)
+                : client.backdrop(item, height: height) ?? client.poster(item, height: height)
+        }
         return stillWide ? client.still(item, height: Int(size.height * 2)) : client.poster(item, height: Int(size.height * 2))
     }
 
@@ -222,7 +242,7 @@ struct PosterLink: View {
                     if opened {
                         CardPreview(item: item, size: size)
                     } else {
-                        RemoteImage(url: imageURL)
+                        RemoteImage(url: imageURL, contentMode: item.type == "BoxSet" ? .fit : .fill)
                             .frame(width: size.width, height: size.height)
                     }
                     if item.isSeries, let left = item.userData?.unplayedItemCount, left > 0, item.userData?.played != true {
@@ -269,7 +289,7 @@ struct PosterLink: View {
             }
             .itemMenu(item)
             // What the web app's Poster text asks for: the title, the year, both or neither.
-            let lines = stillWide ? ["title", "year"] : prefs.posterLines
+            let lines = showsTitle ? ["title"] : stillWide ? ["title", "year"] : prefs.posterLines
             VStack(alignment: .leading, spacing: Theme.px(2)) {
                 if lines.contains("title") {
                     Text(item.isEpisode ? (item.seriesName ?? item.displayTitle) : (item.name ?? ""))
@@ -293,6 +313,7 @@ struct PosterLink: View {
 /// An image that fills its frame, with a plain card while it loads or where there is none.
 struct RemoteImage: View {
     let url: URL?
+    var contentMode: ContentMode = .fill
 
     var body: some View {
         // Takes exactly the frame it's given and clips the picture to it; a filling image would
@@ -302,12 +323,13 @@ struct RemoteImage: View {
                 AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.2))) { phase in
                     switch phase {
                     case .success(let image):
-                        image.resizable().aspectRatio(contentMode: .fill)
+                        image.resizable().aspectRatio(contentMode: contentMode)
                     default:
                         Rectangle().fill(Theme.gray900)
                     }
                 }
             }
+            .background(Theme.gray900)
             .clipped()
     }
 }
@@ -550,7 +572,6 @@ struct SearchView: View {
                         LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                             ForEach(channels) { channel in
                                 ChannelCard(channel: channel, airing: nil) {
-                                    RecentChannels.note(channel.id)
                                     choice = VersionChoice(item: channel, startMs: nil, mode: .straight)
                                 }
                             }

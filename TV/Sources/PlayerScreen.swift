@@ -1,4 +1,5 @@
 import AetherEngineFeatures
+import Combine
 import SwiftUI
 
 // The web app's player as a TV shows it: the title over the top, a purple progress bar with
@@ -26,6 +27,13 @@ struct PlayerScreen: View {
                              leave: close, changeChannel: { step in Task { await changeChannel(step) } })
                     // A new title starts the controls over.
                     .id(model.request.id)
+                    .onReceive(model.$started.removeDuplicates()) { started in
+                        guard started else { return }
+                        let item = model.request.item
+                        if let channelID = item.isChannel ? item.id : item.channelId {
+                            RecentChannels.note(channelID, for: session.profileID)
+                        }
+                    }
             } else {
                 Color.black
             }
@@ -63,10 +71,12 @@ struct PlayerScreen: View {
 
     private func start(_ request: PlayRequest) async {
         guard let client = session.client else { return }
+        let profile = session.profileID
         // A title in Picture in Picture gives way to this one.
         TVPictureInPicture.shared.stop()
         // The show's pick, as the web app keeps it, over the account's rules.
         if let userId = session.userId { await ShowPicks.shared.load(client: client, userId: userId) }
+        guard !Task.isCancelled, session.profileID == profile else { return }
         let base = prefs.trackRules(audioLanguages: request.audioLanguages)
         let tracks = request.isTrailer ? base
             : ShowPicks.shared.rules(base, for: request.item, rememberAudio: prefs.rememberAudio, rememberSubtitles: prefs.rememberSubtitles)
@@ -150,7 +160,6 @@ struct PlayerScreen: View {
             source = match
             playSession = named.playSessionId ?? playSession
         }
-        RecentChannels.note(next.id)
         current.stop()
         await start(PlayRequest(item: next, source: source, playSessionId: playSession, startMs: nil))
     }
@@ -357,9 +366,13 @@ private struct PlayerChrome: View {
                 VStack(spacing: 0) {
                     topBar
                     Spacer()
+                    if model.paused && !model.isLive && model.failure == nil { pauseInfo }
                     bottomBar
                 }
                 .transition(.opacity)
+            } else if model.paused && !model.isLive && model.failure == nil {
+                pauseInfo.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .allowsHitTesting(false)
             }
 
             if let panel {
@@ -474,31 +487,23 @@ private struct PlayerChrome: View {
     private var topBar: some View {
         HStack(spacing: Theme.px(16)) {
             Image(systemName: "arrow.left").font(.system(size: Theme.px(20), weight: .medium))
-            VStack(alignment: .leading, spacing: Theme.px(2)) {
-                Text(model.request.item.isEpisode ? (model.request.item.seriesName ?? "") : (model.request.item.name ?? ""))
-                    .font(Theme.font(17, .semibold))
-                    .lineLimit(1)
-                if model.request.item.isChannel, let programme = model.request.item.currentProgram?.name {
-                    Text(programme)
-                        .font(Theme.font(Theme.sm))
-                        .foregroundStyle(Theme.gray300)
+            if !model.paused || model.isLive {
+                VStack(alignment: .leading, spacing: Theme.px(2)) {
+                    Text(model.request.item.isEpisode ? (model.request.item.seriesName ?? "") : (model.request.item.name ?? ""))
+                        .font(Theme.font(17, .semibold))
                         .lineLimit(1)
-                }
-                if model.request.item.isEpisode {
-                    Text(model.request.item.displayTitle)
-                        .font(Theme.font(Theme.sm))
-                        .foregroundStyle(Theme.gray300)
-                        .lineLimit(1)
-                }
-                // The pause screen: what it's about, while it waits.
-                if model.paused && !model.isLive, let overview = model.overview, !overview.isEmpty {
-                    Text(overview)
-                        .font(Theme.font(Theme.base))
-                        .foregroundStyle(Theme.gray200)
-                        .lineLimit(4)
-                        .frame(maxWidth: Theme.px(720), alignment: .leading)
-                        .padding(.top, Theme.px(10))
-                        .transition(.opacity)
+                    if model.request.item.isChannel, let programme = model.request.item.currentProgram?.name {
+                        Text(programme)
+                            .font(Theme.font(Theme.sm))
+                            .foregroundStyle(Theme.gray300)
+                            .lineLimit(1)
+                    }
+                    if model.request.item.isEpisode {
+                        Text(model.request.item.displayTitle)
+                            .font(Theme.font(Theme.sm))
+                            .foregroundStyle(Theme.gray300)
+                            .lineLimit(1)
+                    }
                 }
             }
             Spacer()
@@ -518,6 +523,25 @@ private struct PlayerChrome: View {
         .background(
             LinearGradient(colors: [.black.opacity(0.85), .clear], startPoint: .top, endPoint: .bottom)
         )
+    }
+
+    private var pauseInfo: some View {
+        let item = model.request.item
+        return VStack(alignment: .leading, spacing: Theme.px(5)) {
+            TitleLogo(item: item, maxHeight: Theme.px(48), maxWidth: Theme.px(420), titleSize: Theme.xl)
+            if item.isEpisode {
+                Text(item.displayTitle).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray200).lineLimit(1)
+            }
+            if let overview = model.overview, !overview.isEmpty {
+                Text(overview).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray200).lineLimit(3)
+            }
+        }
+        .frame(maxWidth: Theme.px(650), alignment: .leading)
+        .padding(Theme.px(16))
+        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: Theme.px(12)))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Theme.px(24))
+        .padding(.bottom, Theme.px(18))
     }
 
     // MARK: Bottom
