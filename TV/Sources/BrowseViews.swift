@@ -148,6 +148,7 @@ extension EnvironmentValues {
 /// The native equivalent of AIOStreams' data-nav-resume row entry.
 struct MediaRowFocus: ViewModifier {
     let targets: [MediaRowTarget]
+    var browsedTarget: MediaRowTarget? = nil
     let reveal: (MediaRowTarget) -> Void
     @FocusState private var focused: MediaRowTarget?
     @State private var remembered: MediaRowTarget?
@@ -155,6 +156,9 @@ struct MediaRowFocus: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.mediaRowFocus, $focused)
+            .onChange(of: browsedTarget) { _, target in
+                if let target { remembered = target }
+            }
             .onChange(of: focused) { previous, current in
                 guard let current else { return }
                 // Moving within the row stays under the system's directional focus engine.
@@ -189,7 +193,73 @@ struct MediaRowCardFocus: ViewModifier {
     }
 }
 
+/// Like the desktop carousel, the arrows move to the next or previous snap in this row.
+struct MediaRowScroll: Equatable {
+    var offset: CGFloat = 0
+    var extent: CGFloat = 0
+    var viewportWidth: CGFloat = 0
+
+    init() {}
+
+    init(_ geometry: ScrollGeometry, rightToLeft: Bool) {
+        viewportWidth = geometry.containerSize.width
+        extent = max(0, geometry.contentSize.width + geometry.contentInsets.leading
+                     + geometry.contentInsets.trailing - geometry.containerSize.width)
+        let fromLeft = geometry.contentOffset.x + (rightToLeft ? geometry.contentInsets.trailing : geometry.contentInsets.leading)
+        offset = min(extent, max(0, rightToLeft ? extent - fromLeft : fromLeft))
+    }
+}
+
+struct MediaRowArrows: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let scroll: MediaRowScroll
+    let stride: CGFloat
+    let targets: [MediaRowTarget]
+    let move: (MediaRowTarget) -> Void
+
+    var body: some View {
+        HStack(spacing: Theme.px(4)) {
+            arrow(forward: false, enabled: scroll.offset > 1)
+            arrow(forward: true, enabled: scroll.offset < scroll.extent - 1)
+        }
+    }
+
+    private func arrow(forward: Bool, enabled: Bool) -> some View {
+        Button {
+            let position = scroll.offset / stride
+            let index = forward ? Int(floor(position + 1 / stride)) + 1 : Int(ceil(position - 1 / stride)) - 1
+            guard !targets.isEmpty else { return }
+            let target = targets[min(targets.count - 1, max(0, index))]
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { move(target) }
+        } label: {
+            Image(systemName: forward ? "chevron.forward" : "chevron.backward")
+                .font(.system(size: Theme.px(15), weight: .semibold))
+                .frame(width: Theme.px(34), height: Theme.px(34))
+        }
+        .buttonStyle(RowScrollArrowStyle())
+        .disabled(!enabled)
+        .accessibilityLabel(forward ? L("Scroll forward") : L("Scroll back"))
+    }
+}
+
+private struct RowScrollArrowStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        Focused { focused in
+            configuration.label
+                .foregroundStyle(.white.opacity(enabled ? 0.95 : 0.35))
+                .background(.white.opacity(focused ? 0.25 : 0.08), in: Circle())
+                .focusRing(focused)
+                .opacity(configuration.isPressed ? 0.75 : 1)
+        }
+    }
+}
+
 struct ItemRow: View {
+    @EnvironmentObject private var prefs: Preferences
+    @State private var rowScroll = MediaRowScroll()
+    @State private var browsedTarget: MediaRowTarget?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.layoutDirection) private var layoutDirection
     @Namespace private var previewViewport
@@ -203,20 +273,30 @@ struct ItemRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.px(12)) {
-            HStack(spacing: Theme.px(8)) {
-                Text(row.title).font(Theme.font(Theme.xl, .semibold))
-                if row.collection, row.library != nil {
-                    Text(L("Collections")).foregroundStyle(Theme.gray400)
+        ScrollViewReader { scroller in
+            VStack(alignment: .leading, spacing: Theme.px(12)) {
+                HStack(spacing: Theme.px(8)) {
+                    Text(row.title).font(Theme.font(Theme.xl, .semibold))
+                    if row.collection, row.library != nil {
+                        Text(L("Collections")).foregroundStyle(Theme.gray400)
+                    }
+                    if let library = row.library {
+                        RowBrowseArrow(title: row.title, route: row.collection ? .collectionCovers(library) : .library(library))
+                    } else {
+                        RowBrowseArrow(title: row.title, route: row.browseRoute ?? .rowResults(title: row.title, items: row.items))
+                    }
+                    Spacer()
+                    MediaRowArrows(scroll: rowScroll, stride: (row.wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)) + Theme.px(16),
+                                   targets: targets) { target in
+                        browsedTarget = target
+                        let width = row.wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)
+                        let leading = min(1, pageInset / max(1, rowScroll.viewportWidth - width))
+                        let anchor = UnitPoint(x: layoutDirection == .rightToLeft ? 1 - leading : leading, y: 0.5)
+                        scroller.scrollTo(target, anchor: anchor)
+                    }
                 }
-                if let library = row.library {
-                    RowBrowseArrow(title: row.title, route: row.collection ? .collectionCovers(library) : .library(library))
-                } else {
-                    RowBrowseArrow(title: row.title, route: row.browseRoute ?? .rowResults(title: row.title, items: row.items))
-                }
-            }
-            .pagePadding()
-            ScrollViewReader { scroller in
+                .pagePadding()
+                .focusSection()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                         ForEach(cards) { item in
@@ -238,7 +318,10 @@ struct ItemRow: View {
                 .coordinateSpace(name: previewViewport)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
                 .edgeToEdge()
-                .modifier(MediaRowFocus(targets: targets) { scroller.scrollTo($0) })
+                .onScrollGeometryChange(for: MediaRowScroll.self) {
+                    MediaRowScroll($0, rightToLeft: layoutDirection == .rightToLeft)
+                } action: { _, scroll in rowScroll = scroll }
+                .modifier(MediaRowFocus(targets: targets, browsedTarget: browsedTarget) { scroller.scrollTo($0) })
             }
         }
         .focusSection()

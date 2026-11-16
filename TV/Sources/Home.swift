@@ -110,7 +110,7 @@ struct HomeView: View {
                 Color.clear.frame(height: Theme.px(16))
             }
             if !resuming.isEmpty {
-                WideRow(title: L("Continue watching"), items: Array(resuming.prefix(24)), play: playFromContinueWatching) {
+                WideRow(title: L("Continue watching"), items: Array(resuming.prefix(24)), continueWatching: true, play: playFromContinueWatching) {
                     RowBrowseArrow(title: L("Continue watching"), route: .rowResults(title: L("Continue watching"), items: resuming, wide: true))
                 }
                     .environment(\.cardFocused, { _ in })
@@ -304,6 +304,7 @@ private enum HeroAction: Hashable { case play, info, next, previous }
 /// Right past its last button turns to the next title; left past its first, to the one before.
 struct HeroCarousel: View {
     @EnvironmentObject private var session: Session
+    @EnvironmentObject private var prefs: Preferences
     let items: [Item]
     let play: (Item) -> Void
     /// The focused card's title, which the hero shows instead of rotating (Hero: follows the card).
@@ -316,9 +317,8 @@ struct HeroCarousel: View {
     /// When the hero last turned, as the new title's details take a moment to take focus.
     @State private var turnedAt = Date.distantPast
 
-    /// `max(36rem, 53vh)` on a 720-line TV.
-    static let height = Theme.px(576)
-    @EnvironmentObject private var prefs: Preferences
+    /// Leaves the first shelf visible below the artwork at the top of Home.
+    static let height = Theme.px(486)
 
     private var item: Item { followed ?? items[min(index, items.count - 1)] }
 
@@ -378,13 +378,28 @@ struct HeroCarousel: View {
     private var backdrop: some View {
         GeometryReader { geometry in
             let inset = Theme.railInset
+            let artWash = prefs.flag("artBackground", false)
             HeroArtwork(url: session.client?.backdrop(item, height: 1080))
+                .mask {
+                    if artWash {
+                        LinearGradient(colors: [.clear, .black], startPoint: .bottom, endPoint: .center)
+                            .mask {
+                                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .center)
+                            }
+                    } else {
+                        Rectangle()
+                    }
+                }
                 .overlay {
                     ZStack {
-                        LinearGradient(colors: [.black.opacity(0.75), .clear],
-                                       startPoint: .leading, endPoint: .trailing)
-                        LinearGradient(colors: [Theme.background, .black.opacity(0.08), .clear],
-                                       startPoint: .bottom, endPoint: .center)
+                        if !artWash {
+                            LinearGradient(stops: [.init(color: Theme.background, location: 0),
+                                                   .init(color: Theme.background.opacity(0.7), location: 0.35),
+                                                   .init(color: .clear, location: 1)],
+                                           startPoint: .leading, endPoint: .trailing)
+                            LinearGradient(colors: [Theme.background, Theme.background.opacity(0.6), .clear],
+                                           startPoint: .bottom, endPoint: UnitPoint(x: 0.5, y: 1.0 / 3.0))
+                        }
                         if Theme.topBarInset > 0 {
                             LinearGradient(colors: [.black.opacity(0.42), .clear],
                                            startPoint: .top, endPoint: .bottom)
@@ -562,27 +577,39 @@ struct HeroMeta: View {
 
 /// What's under way, as stills that play from the row: the web app's EpisodeRow.
 struct WideRow<Action: View>: View {
+    @Environment(\.layoutDirection) private var layoutDirection
+    @State private var rowScroll = MediaRowScroll()
+    @State private var browsedTarget: MediaRowTarget?
     let title: String
     let items: [Item]
     /// Cards with the day each airs, and how long until then.
     var upcoming = false
+    var continueWatching = false
     let play: (Item) -> Void
     @ViewBuilder let action: () -> Action
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.px(12)) {
-            HStack {
-                Text(title).font(Theme.font(Theme.xl, .semibold))
-                Spacer()
-                action()
-            }
-            .pagePadding()
-            .focusSection()
-            ScrollViewReader { scroller in
+        let targets = items.map { MediaRowTarget.item($0.id) }
+        return ScrollViewReader { scroller in
+            VStack(alignment: .leading, spacing: Theme.px(12)) {
+                HStack {
+                    Text(title).font(Theme.font(Theme.xl, .semibold))
+                    Spacer()
+                    action()
+                    MediaRowArrows(scroll: rowScroll, stride: WideCard.size.width + Theme.px(16), targets: targets) { target in
+                        browsedTarget = target
+                        let width = WideCard.size.width
+                        let leading = min(1, pageInset / max(1, rowScroll.viewportWidth - width))
+                        let anchor = UnitPoint(x: layoutDirection == .rightToLeft ? 1 - leading : leading, y: 0.5)
+                        scroller.scrollTo(target, anchor: anchor)
+                    }
+                }
+                .pagePadding()
+                .focusSection()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                         ForEach(items) { item in
-                            WideCard(item: item, upcoming: upcoming) { play(item) }
+                            WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
                                 .id(MediaRowTarget.item(item.id))
                         }
                     }
@@ -590,7 +617,10 @@ struct WideRow<Action: View>: View {
                     .padding(.vertical, Theme.px(8))
                 }
                 .edgeToEdge()
-                .modifier(MediaRowFocus(targets: items.map { .item($0.id) }) { scroller.scrollTo($0) })
+                .onScrollGeometryChange(for: MediaRowScroll.self) {
+                    MediaRowScroll($0, rightToLeft: layoutDirection == .rightToLeft)
+                } action: { _, scroll in rowScroll = scroll }
+                .modifier(MediaRowFocus(targets: targets, browsedTarget: browsedTarget) { scroller.scrollTo($0) })
             }
         }
         .focusSection()
@@ -607,6 +637,7 @@ struct WideCard: View {
     let item: Item
     /// Not out yet: the air day over the still, and how long until it beside the name.
     var upcoming = false
+    var continueWatching = false
     let action: () -> Void
 
     private var hasCardFocus: Bool {
@@ -654,7 +685,7 @@ struct WideCard: View {
             .buttonStyle(CardStyle())
             .modifier(MediaRowCardFocus(target: .item(item.id), local: $focused))
             .onChange(of: hasCardFocus) { _, on in if on { cardFocused(item) } }
-            .itemMenu(item)
+            .itemMenu(item, continueWatching: continueWatching)
             VStack(alignment: .leading, spacing: Theme.px(2)) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(item.isEpisode ? (item.seriesName ?? "") : (item.name ?? ""))

@@ -39,6 +39,8 @@ struct ItemMenu: ViewModifier {
     @Environment(\.removeFromPlaylist) private var removeFromPlaylist
     let item: Item
     @State private var adding = false
+    @State private var choosingDevice = false
+    var continueWatching = false
     /// On the title's own page, where Open would lead nowhere.
     var onPage = false
 
@@ -46,43 +48,56 @@ struct ItemMenu: ViewModifier {
 
     /// Whether Play would start a version without listing them.
     private var playsStraight: Bool {
-        prefs.autoPlayFirst || (item.resumeMs != nil && LastVersions.get(item.id) != nil)
+        if continueWatching && item.isEpisode { return false }
+        return prefs.autoPlayFirst || (item.resumeMs != nil && LastVersions.get(item.id) != nil)
     }
     private var favourite: Bool { item.userData?.isFavorite == true }
 
     func body(content: Content) -> some View {
         content.contextMenu {
-            if item.playable {
-                Button { play(item, .usual) } label: {
-                    Label(item.resumeMs != nil ? L("Resume") : L("Play"), systemImage: "play.fill")
-                }
-                // The other way to start, as holding Play does in the web app.
-                if playsStraight {
-                    Button { play(item, .list) } label: {
-                        Label(L("Choose a version"), systemImage: "list.bullet")
+            Section {
+                if item.playable {
+                    Button { play(item, continueWatching && item.isEpisode ? .list : .usual) } label: {
+                        Label(item.resumeMs != nil ? L("Resume") : L("Play"), systemImage: "play.fill")
                     }
-                } else {
-                    Button { play(item, .straight) } label: {
-                        Label(L("Play straight away"), systemImage: "forward.end")
+                    // The other way to start, as holding Play does in the web app.
+                    if playsStraight {
+                        Button { play(item, .list) } label: {
+                            Label(L("Choose a version"), systemImage: "list.bullet")
+                        }
+                    } else {
+                        Button { play(item, .straight) } label: {
+                            Label(L("Play straight away"), systemImage: "forward.end")
+                        }
                     }
                 }
-            }
-            if item.isEpisode, let seriesId = item.seriesId {
-                Button {
-                    openRoute(.item(Item(id: seriesId, name: item.seriesName, type: "Series")))
-                } label: {
-                    Label(L("Go to show"), systemImage: "tv")
+                if continueWatching && item.playable {
+                    Button { choosingDevice = true } label: {
+                        Label(L("Play on another device"), systemImage: "airplay.video")
+                    }
                 }
-            } else if !onPage {
-                Button {
-                    openRoute(item.isFolder ? .library(item) : .item(item))
-                } label: {
-                    Label(L("Open"), systemImage: "info.circle")
+                if item.playable || item.isSeries {
+                    Button { adding = true } label: { Label(L("Add to playlist"), systemImage: "text.badge.plus") }
                 }
+                if item.isEpisode, let seriesId = item.seriesId {
+                    Button {
+                        openRoute(.item(Item(id: seriesId, name: item.seriesName, type: "Series")))
+                    } label: {
+                        Label(L("Go to show"), systemImage: "tv")
+                    }
+                } else if !onPage {
+                    Button {
+                        openRoute(item.isFolder ? .library(item) : .item(item))
+                    } label: {
+                        Label(L("Open"), systemImage: "info.circle")
+                    }
+                }
+            } header: {
+                Text(item.seriesName ?? item.name ?? item.displayTitle)
             }
             if item.type != "BoxSet" {
                 // Watched before but started again: marking it watched finishes this time through.
-                if !played || item.resumeMs != nil {
+                if !played || (!continueWatching && item.resumeMs != nil) {
                     Button {
                         act { client, userId in
                             try await client.call("POST", "/UserPlayedItems/\(item.id)", ["userId": userId])
@@ -130,14 +145,15 @@ struct ItemMenu: ViewModifier {
                     Label(favourite ? L("Remove favourite") : L("Add favourite"), systemImage: favourite ? "heart.slash" : "heart")
                 }
             }
-            if item.playable || item.isSeries {
-                Button { adding = true } label: { Label(L("Add to playlist"), systemImage: "text.badge.plus") }
-            }
             if let removeFromPlaylist {
                 Button(role: .destructive) { removeFromPlaylist(item) } label: {
                     Label(L("Remove from playlist"), systemImage: "minus.circle")
                 }
             }
+        }
+        .fullScreenCover(isPresented: $choosingDevice) {
+            ItemRemotePicker(item: item) { choosingDevice = false }
+                .environmentObject(session)
         }
         .fullScreenCover(isPresented: $adding) {
             AddToPlaylist(item: item) { adding = false }
@@ -187,8 +203,8 @@ struct ItemMenu: ViewModifier {
 }
 
 extension View {
-    func itemMenu(_ item: Item, onPage: Bool = false) -> some View {
-        modifier(ItemMenu(item: item, onPage: onPage))
+    func itemMenu(_ item: Item, onPage: Bool = false, continueWatching: Bool = false) -> some View {
+        modifier(ItemMenu(item: item, continueWatching: continueWatching, onPage: onPage))
     }
 
     /// Loads again when a menu changes what's watched or favourite.
@@ -196,5 +212,79 @@ extension View {
         onReceive(NotificationCenter.default.publisher(for: .watchStateChanged)) { _ in
             Task { await action() }
         }
+    }
+}
+
+
+/// Lists other Jellyfin sessions that can accept the web app's PlayNow command.
+private struct ItemRemotePicker: View {
+    private struct Device: Decodable, Identifiable {
+        let id: String
+        let deviceId: String?
+        let deviceName: String?
+        let client: String?
+        let supportsRemoteControl: Bool?
+        let playableMediaTypes: [String]?
+    }
+
+    @EnvironmentObject private var session: Session
+    @State private var devices: [Device]?
+    @State private var error: String?
+    @State private var sending = false
+    let item: Item
+    let close: () -> Void
+
+    var body: some View {
+        VStack(spacing: Theme.px(18)) {
+            Text(L("Play on another device")).font(Theme.font(Theme.xl, .semibold))
+            if let devices {
+                if devices.isEmpty {
+                    Text(L("No devices available"))
+                } else {
+                    ScrollView {
+                        VStack(spacing: Theme.px(8)) {
+                            ForEach(devices) { device in
+                                Button(device.deviceName ?? device.client ?? L("Device")) {
+                                    Task { await play(on: device) }
+                                }
+                                .buttonStyle(SoftPillStyle())
+                                .disabled(sending)
+                            }
+                        }
+                    }
+                }
+            } else if error == nil {
+                ProgressView()
+            }
+            if let error { Text(error).foregroundStyle(Theme.gray300) }
+            Button(L("Back"), action: close).buttonStyle(SoftPillStyle())
+        }
+        .frame(maxWidth: Theme.px(480), maxHeight: Theme.px(360))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onExitCommand(perform: close)
+        .task {
+            guard let client = session.client, let userId = session.userId else { return }
+            do {
+                let found: [Device] = try await client.get("/Sessions", ["ControllableByUserId": userId])
+                devices = found.filter {
+                    $0.supportsRemoteControl == true && $0.playableMediaTypes?.contains("Video") == true
+                        && $0.deviceId?.lowercased() != client.deviceId.lowercased()
+                }
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    private func play(on device: Device) async {
+        guard !sending, let client = session.client else { return }
+        sending = true
+        error = nil
+        defer { sending = false }
+        do {
+            try await client.call("POST", "/Sessions/\(device.id)/Playing", [
+                "playCommand": "PlayNow", "itemIds": item.id,
+                "startPositionTicks": String(max(0, item.userData?.playbackPositionTicks ?? 0)),
+            ])
+            close()
+        } catch { self.error = error.localizedDescription }
     }
 }
