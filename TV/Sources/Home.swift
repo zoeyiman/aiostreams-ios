@@ -72,7 +72,9 @@ struct HomeView: View {
     var body: some View {
         Group {
             if !loaded {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.top, Theme.topBarInset)
             } else if following && !hero.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     HeroCarousel(items: hero, play: play, followed: followed ?? hero.first,
@@ -80,7 +82,9 @@ struct HomeView: View {
                     ScrollView { rows }.edgeToEdge()
                 }
             } else {
-                ScrollView { rows }.edgeToEdge()
+                ScrollView { rows }
+                    .edgeToEdge()
+                    .padding(.top, hero.isEmpty ? Theme.topBarInset : 0)
             }
         }
         .environment(\.cardFocused, { item in
@@ -312,7 +316,7 @@ struct HeroCarousel: View {
                 .transition(.opacity)
             if items.count > 1 && followed == nil { dots }
         }
-        .frame(height: height)
+        .frame(height: height + Theme.topBarInset)
         .frame(maxWidth: .infinity)
         .animation(.easeInOut(duration: 0.6), value: index)
         .task(id: "\(item.id)-\(items.count)-\(focus == nil)-\(prefs.heroSeconds)") {
@@ -367,6 +371,12 @@ struct HeroCarousel: View {
                                        startPoint: .leading, endPoint: .trailing)
                         LinearGradient(colors: [Theme.background, .black.opacity(0.08), .clear],
                                        startPoint: .bottom, endPoint: .center)
+                        if Theme.topBarInset > 0 {
+                            LinearGradient(colors: [.black.opacity(0.42), .clear],
+                                           startPoint: .top, endPoint: .bottom)
+                                .frame(height: Theme.topBarInset * 1.6)
+                                .frame(maxHeight: .infinity, alignment: .top)
+                        }
                     }
                 }
                 .frame(width: geometry.size.width + inset, height: geometry.size.height)

@@ -102,7 +102,7 @@ struct MainView: View {
                 Task { choice = await playChoice(for: item, session: session, mode: mode) }
             })
             .padding(.leading, Theme.railInset)
-            .padding(.top, Theme.topBarInset)
+            .padding(.top, onHome ? 0 : Theme.topBarInset)
             .mask { pageEdge }
 
             if top {
@@ -112,7 +112,8 @@ struct MainView: View {
             // The rail's own column, which rows scrolled under it disappear beneath. Over the
             // artwork there's none, as in the web app: the icons sit on the art, and the page
             // fades out before reaching them instead (pageEdge).
-            if !top && !onHome && !prefs.flag("artBackground", false) {
+            if !top && prefs.effectiveNavigationSurface == .solid
+                && !onHome && !prefs.flag("artBackground", false) {
                 Theme.background
                     .frame(width: Theme.px(80))
                     .ignoresSafeArea()
@@ -137,7 +138,15 @@ struct MainView: View {
             .ignoresSafeArea()
 
             if !top {
-                rail
+                rail.background(alignment: .leading) {
+                    if prefs.effectiveNavigationSurface != .solid {
+                        Color.clear
+                            .frame(width: Theme.px(open ? 256 : 80))
+                            .modifier(NavigationSurfaceStyle(surface: prefs.effectiveNavigationSurface,
+                                                             shape: RoundedRectangle(cornerRadius: Theme.px(18))))
+                            .allowsHitTesting(false)
+                    }
+                }
             }
 
             // What others in a watch party do, said briefly.
@@ -350,8 +359,12 @@ struct MainView: View {
             }
             .layoutPriority(1)
             Spacer(minLength: Theme.px(12))
-            tab(.settings)
-            tab(.account)
+            HStack(spacing: Theme.px(2)) {
+                tab(.settings)
+                tab(.account)
+            }
+            .padding(Theme.px(4))
+            .modifier(NavigationSurfaceStyle(surface: prefs.effectiveNavigationSurface, shape: Capsule()))
         }
         .padding(.horizontal, pageInset)
         .padding(.top, Theme.px(14))
@@ -377,7 +390,7 @@ struct MainView: View {
             }) { tab($0, named: named) }
         }
         .padding(Theme.px(4))
-        .background(Capsule().fill(Color(white: 17 / 255).opacity(0.85)))
+        .modifier(NavigationSurfaceStyle(surface: prefs.effectiveNavigationSurface, shape: Capsule()))
         .fixedSize()
     }
 

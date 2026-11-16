@@ -394,12 +394,6 @@ struct PosterLink: View {
 
     private var imageURL: URL? {
         guard let client = session.client else { return nil }
-        if item.type == "BoxSet" {
-            let height = Int(size.height * 2)
-            return item.tag("Primary") != nil
-                ? client.poster(item, height: height)
-                : client.backdrop(item, height: height) ?? client.poster(item, height: height)
-        }
         if portrait && item.isEpisode, let series = item.seriesId {
             return client.image(series, .primary, tag: item.seriesPrimaryImageTag, height: Int(size.height * 2))
         }
@@ -412,8 +406,13 @@ struct PosterLink: View {
                 ZStack(alignment: .topTrailing) {
                     if opened {
                         CardPreview(item: item, size: size)
+                    } else if item.type == "BoxSet" {
+                        let urls = session.client?.collectionArtwork(item, width: Int(size.width * 2), wide: stillWide) ?? []
+                        CollectionArtwork(urls: urls)
+                            .id(urls)
+                            .frame(width: size.width, height: size.height)
                     } else {
-                        RemoteImage(url: imageURL, contentMode: item.type == "BoxSet" ? .fit : .fill)
+                        RemoteImage(url: imageURL)
                             .frame(width: size.width, height: size.height)
                     }
                     if item.isSeries, let left = item.userData?.unplayedItemCount, left > 0, item.userData?.played != true {
@@ -488,6 +487,35 @@ struct PosterLink: View {
             .padding(.horizontal, Theme.px(2))
             .frame(width: size.width, alignment: .leading)
         }
+    }
+}
+
+/// Keep logos and lettering inside the card even when the server supplies art of a different shape.
+private struct CollectionArtwork: View {
+    let urls: [URL]
+    @State private var index = 0
+
+    var body: some View {
+        Color.black.overlay {
+            if urls.indices.contains(index) {
+                let url = urls[index]
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFit()
+                    case .failure:
+                        Color.clear.task(id: url) {
+                            guard urls.indices.contains(index), urls[index] == url else { return }
+                            index += 1
+                        }
+                    default:
+                        Color.clear
+                    }
+                }
+                .id(url)
+            }
+        }
+        .clipped()
     }
 }
 
@@ -805,7 +833,9 @@ struct LibraryView: View {
     private var collectionHeader: some View {
         VStack(alignment: .leading, spacing: Theme.px(30)) {
             HStack(alignment: .bottom, spacing: Theme.px(24)) {
-                RemoteImage(url: session.client?.poster(view, height: 540), contentMode: .fit)
+                let urls = session.client?.collectionArtwork(view, width: Int(Theme.px(568))) ?? []
+                CollectionArtwork(urls: urls)
+                    .id(urls)
                     .frame(width: Theme.px(284), height: Theme.px(160))
                     .clipShape(RoundedRectangle(cornerRadius: Theme.px(12)))
                 Text(view.name ?? L("Collection"))

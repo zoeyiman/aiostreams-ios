@@ -580,8 +580,20 @@ struct JellyfinClient: Sendable {
         return backdrop(item, height: height) ?? poster(item, height: height)
     }
 
+    /// Wide cards prefer Jellyfin's landscape thumbnail, then the collection's primary cover.
+    /// maxWidth keeps the source aspect ratio through the image endpoint.
+    func collectionArtwork(_ item: Item, width: Int, wide: Bool = true) -> [URL] {
+        let thumb = wide ? item.tag("Thumb").map { image(item.id, .thumb, tag: $0, width: width) } : nil
+        let primary = image(item.id, .primary, tag: item.tag("Primary"), width: width)
+        let backdrop = item.backdropImageTags?.first.map {
+            image(item.id, .backdrop, tag: $0, width: width)
+        }
+        return [thumb, primary, backdrop].compactMap { $0 }
+    }
+
     func image(_ itemId: String, _ kind: ImageKind, tag: String?, width: Int) -> URL {
-        url("/Items/\(itemId)/Images/\(kind.rawValue)", ["tag": tag, "maxWidth": String(width), "quality": "90"])
+        let path = kind == .backdrop ? "/Items/\(itemId)/Images/Backdrop/0" : "/Items/\(itemId)/Images/\(kind.rawValue)"
+        return url(path, ["tag": tag, "maxWidth": String(width), "quality": "90"])
     }
 
     func backdrop(_ item: Item, height: Int) -> URL? {

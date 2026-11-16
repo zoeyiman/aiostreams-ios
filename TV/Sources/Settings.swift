@@ -251,6 +251,16 @@ final class Preferences: ObservableObject {
         let raw = text("posterText", "title,year")
         return Set(raw.split(separator: ",").map(String.init).filter { ["title", "year"].contains($0) })
     }
+    @Published var navigationSurface = NavigationSurface(
+        rawValue: UserDefaults.standard.string(forKey: "interface.navigationSurface") ?? ""
+    ) ?? .frosted {
+        didSet { UserDefaults.standard.set(navigationSurface.rawValue, forKey: "interface.navigationSurface") }
+    }
+
+    var effectiveNavigationSurface: NavigationSurface {
+        navigationSurface == .liquid && !NavigationSurface.supportsLiquidGlass ? .frosted : navigationSurface
+    }
+
     /// The theme's colours, `#rrggbb`, where the web app's theme set them.
     var accentColor: String? { custom["accentColor"].flatMap { $0.isEmpty ? nil : $0 } }
     var backgroundColor: String? { custom["backgroundColor"].flatMap { $0.isEmpty ? nil : $0 } }
@@ -722,6 +732,16 @@ struct SettingsView: View {
                        options: [(L("Default"), ""), (L("Blue"), "#3b82f6"), (L("Sky"), "#0ea5e9"), (L("Teal"), "#14b8a6"),
                                  (L("Green"), "#22c55e"), (L("Amber"), "#f59e0b"), (L("Orange"), "#f97316"), (L("Red"), "#ef4444"),
                                  (L("Pink"), "#ec4899"), (L("Violet"), "#8b5cf6")])
+                row(L("Glass surface"), value: prefs.effectiveNavigationSurface.label) {
+                    let available = NavigationSurface.allCases.filter {
+                        $0 != .liquid || NavigationSurface.supportsLiquidGlass
+                    }
+                    chooser = Chooser(title: L("Glass surface"),
+                                      options: available.map { ($0.label, $0.rawValue) },
+                                      current: prefs.effectiveNavigationSurface.rawValue) {
+                        if let surface = NavigationSurface(rawValue: $0) { prefs.navigationSurface = surface }
+                    }
+                }
                 toggle(L("Background from artwork"), key: "artBackground", fallback: false)
                 synced(L("Background"), key: "backgroundColor", fallback: "",
                        options: [(L("Default"), ""), (L("Black"), "#000000"), (L("Charcoal"), "#1c1c1f"), (L("Slate"), "#1e2836"),

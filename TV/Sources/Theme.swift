@@ -199,6 +199,55 @@ struct CardStyle: ButtonStyle {
     }
 }
 
+enum NavigationSurface: String, CaseIterable {
+    case solid, frosted, liquid
+
+    var label: String {
+        switch self {
+        case .solid: return L("Solid")
+        case .frosted: return L("Frosted glass")
+        case .liquid: return L("Liquid glass")
+        }
+    }
+
+    static var supportsLiquidGlass: Bool {
+        #if compiler(>=6.2)
+        if #available(tvOS 26.0, *) { return true }
+        #endif
+        return false
+    }
+}
+
+struct NavigationSurfaceStyle<Outline: Shape>: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    let surface: NavigationSurface
+    let shape: Outline
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if surface == .solid || reduceTransparency {
+            content.background(shape.fill(Theme.background))
+        } else {
+            #if compiler(>=6.2)
+            if surface == .liquid, #available(tvOS 26.0, *) {
+                content.glassEffect(.regular, in: shape)
+            } else {
+                frosted(content)
+            }
+            #else
+            frosted(content)
+            #endif
+        }
+    }
+
+    private func frosted(_ content: Content) -> some View {
+        content.background {
+            shape.fill(.regularMaterial)
+                .overlay { shape.fill(.black.opacity(0.28)) }
+                .overlay { shape.stroke(.white.opacity(0.12), lineWidth: Theme.px(1)) }
+        }
+    }
+}
+
 /// A row in a list or sheet: a soft fill when focused, ringed.
 struct RowStyle: ButtonStyle {
     var radius: CGFloat = Theme.px(12)
