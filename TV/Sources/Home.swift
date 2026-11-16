@@ -60,6 +60,7 @@ struct HomeView: View {
     @EnvironmentObject private var prefs: Preferences
     @State private var hero: [Item] = []
     @State private var catalogs: [HomeRow] = []
+    @State private var resuming: [Item] = []
     @State private var loaded = false
     @State private var loading = false
     @State private var error: String?
@@ -99,10 +100,14 @@ struct HomeView: View {
             } else {
                 Color.clear.frame(height: Theme.px(16))
             }
+            if !resuming.isEmpty {
+                WideRow(title: L("Continue watching"), items: resuming, play: play) { EmptyView() }
+                    .environment(\.cardFocused, { _ in })
+            }
             ForEach(catalogs) { row in
                 ItemRow(row: row)
             }
-            if catalogs.isEmpty {
+            if catalogs.isEmpty && resuming.isEmpty {
                 VStack(spacing: Theme.px(16)) {
                     if loading {
                         ProgressView()
@@ -133,7 +138,7 @@ struct HomeView: View {
             if !Task.isCancelled { loaded = true }
         }
         do {
-            // Top Shelf on the Apple TV system home screen continues to offer playback shortcuts.
+            // Resume feeds the first Home row and also provides shortcuts for Top Shelf.
             async let resume: ItemsResult? = try? client.get("/UserItems/Resume", ["userId": userId, "Limit": "24", "MediaTypes": "Video"])
             async let nextUp: ItemsResult? = try? client.get("/Shows/NextUp", ["userId": userId, "Limit": "24", "EnableResumable": "false"])
             let result: ItemsResult = try await client.get("/UserViews", ["userId": userId])
@@ -196,7 +201,12 @@ struct HomeView: View {
                 for await (index, row) in group { result[index] = row }
                 return result.keys.sorted().compactMap { result[$0] }
             }
+            let resumeResult = await resume
             guard !Task.isCancelled, profile == session.profileID else { return }
+            if let resumeResult {
+                let titles = (resumeResult.items ?? []).filter { !$0.isChannel && $0.channelId == nil }
+                if resuming != titles { resuming = titles }
+            }
             if catalogs.count != rows.count || !zip(catalogs, rows).allSatisfy({ old, new in
                 old.id == new.id && old.title == new.title && old.items == new.items
             }) {
@@ -205,9 +215,9 @@ struct HomeView: View {
             updateHero()
             loaded = true
 
-            let (resuming, next) = await (resume, nextUp)
-            if !Task.isCancelled, profile == session.profileID, resuming != nil || next != nil {
-                saveTopShelf(client: client, resume: resuming?.items ?? [], nextUp: next?.items ?? [])
+            let next = await nextUp
+            if !Task.isCancelled, profile == session.profileID, resumeResult != nil || next != nil {
+                saveTopShelf(client: client, resume: resuming, nextUp: next?.items ?? [])
             }
         } catch let failure as JellyfinError where failure.status == 401 {
             if !Task.isCancelled { session.expired(client) }
