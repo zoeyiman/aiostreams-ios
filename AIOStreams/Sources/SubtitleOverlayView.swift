@@ -198,7 +198,11 @@ final class SubtitleOverlayView: UIView {
         if let family = look.fontFamily {
             descriptor = UIFontDescriptor(fontAttributes: [.family: family])
         } else {
+            #if os(tvOS)
+            descriptor = UIFont.systemFont(ofSize: size, weight: .regular).fontDescriptor
+            #else
             descriptor = UIFont.systemFont(ofSize: size, weight: .semibold).fontDescriptor
+            #endif
         }
         var traits: UIFontDescriptor.SymbolicTraits = []
         if bold || look.bold { traits.insert(.traitBold) }
@@ -222,7 +226,12 @@ final class SubtitleOverlayView: UIView {
         if let runs {
             for run in runs {
                 var attributes = base
-                attributes[.font] = font(size: size, bold: run.isBold, italic: run.isItalic)
+                #if os(tvOS)
+                let trackBold = run.isBold && !look.forceStyle
+                #else
+                let trackBold = run.isBold
+                #endif
+                attributes[.font] = font(size: size, bold: trackBold, italic: run.isItalic)
                 var colour = look.color
                 if !look.forceStyle, let c = run.color {
                     colour = UIColor(red: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255, blue: CGFloat(c.b) / 255, alpha: 1)

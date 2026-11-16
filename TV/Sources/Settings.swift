@@ -389,7 +389,9 @@ final class Preferences: ObservableObject {
     /// The web app's subtitle style, in the overlay's units (lib/subtitles/style.ts).
     var subtitleLook: SubtitleLook {
         var look = SubtitleLook()
-        look.scale = 0.8 * (["small": 0.8, "normal": 1, "large": 1.25, "huge": 1.5][text("subtitleSize", "normal")] ?? 1)
+        // Keep the synced names while sizing text for a television.
+        let sizes = ["small": 0.48, "normal": 0.66, "large": 0.85, "huge": 1.15]
+        look.scale = sizes[text("subtitleSize", "normal")] ?? 0.66
         look.bold = flag("subtitleBold", false)
         look.color = JSON.color(text("subtitleColor", "#ffffff")) ?? .white
         look.outlineColor = JSON.color(text("subtitleOutlineColor", "#000000")) ?? .black
@@ -700,7 +702,7 @@ struct SettingsView: View {
                 configToggle(L("Remember picks per show"), key: "RememberSubtitleSelections", on: prefs.rememberSubtitles)
                 note(L("Subtitles you pick or turn off while watching a show stay that way for its other episodes. Picking what the settings above would show forgets it."))
             }
-            section(L("Subtitle style"), note: L("The same style as the web app's, on every device you sign in to.")) {
+            section(L("Subtitle style"), note: L("Size and weight apply to text subtitles. Image-based tracks use the lettering supplied with the video.")) {
                 synced(L("Size"), key: "subtitleSize", fallback: "normal",
                        options: [(L("Small"), "small"), (L("Normal"), "normal"), (L("Large"), "large"), (L("Huge"), "huge")])
                 synced(L("Font"), key: "subtitleFont", fallback: "default",
@@ -722,6 +724,7 @@ struct SettingsView: View {
                 synced(L("Height"), key: "subtitlePosition", fallback: "0",
                        options: [(L("Lowest"), "-3"), (L("Normal"), "0"), (L("Raised a little"), "5"), (L("Raised"), "10"), (L("High"), "20")])
                 toggle(L("Override styled subtitles"), key: "subtitleOverrideStyled", fallback: false)
+                note(L("Turn this on to use your chosen text weight and colour for styled subtitle tracks."))
                 SubtitlePreview(look: prefs.subtitleLook)
                     .frame(width: Theme.px(480), height: Theme.px(270))
                     .clipShape(RoundedRectangle(cornerRadius: Theme.px(12), style: .continuous))

@@ -112,7 +112,7 @@ struct HomeView: View {
     private var rows: some View {
         LazyVStack(alignment: .leading, spacing: Theme.px(40)) {
             if !hero.isEmpty && !following {
-                HeroCarousel(items: hero, play: play).padding(.bottom, -Theme.px(32))
+                HeroCarousel(items: hero, play: play).padding(.bottom, -Theme.px(46))
             } else {
                 Color.clear.frame(height: Theme.px(16))
             }
@@ -325,7 +325,7 @@ struct HeroCarousel: View {
     @State private var turnedAt = Date.distantPast
 
     /// Leaves the first shelf visible below the artwork at the top of Home.
-    static let height = Theme.px(486)
+    static let height = Theme.px(530)
 
     private var item: Item { followed ?? items[min(index, items.count - 1)] }
 
@@ -394,10 +394,10 @@ struct HeroCarousel: View {
                         }
                         if !artWash {
                             LinearGradient(stops: [.init(color: Theme.background, location: 0),
-                                                   .init(color: Theme.background.opacity(0.7), location: 0.35),
+                                                   .init(color: Theme.background.opacity(0.48), location: 0.32),
                                                    .init(color: .clear, location: 1)],
                                            startPoint: .leading, endPoint: .trailing)
-                            LinearGradient(colors: [Theme.background, Theme.background.opacity(0.6), .clear],
+                            LinearGradient(colors: [Theme.background, Theme.background.opacity(0.35), .clear],
                                            startPoint: .bottom, endPoint: UnitPoint(x: 0.5, y: 1.0 / 3.0))
                         }
                         if Theme.topBarInset > 0 {
@@ -415,15 +415,15 @@ struct HeroCarousel: View {
     }
 
     private var details: some View {
-        VStack(alignment: .leading, spacing: Theme.px(16)) {
-            TitleLogo(item: item, maxHeight: Theme.px(112), maxWidth: Theme.px(384), titleSize: 48)
+        VStack(alignment: .leading, spacing: Theme.px(18)) {
+            TitleLogo(item: item, maxHeight: Theme.px(96), maxWidth: Theme.px(320), titleSize: 44)
             HeroMeta(item: item)
             if let overview = item.overview, !overview.isEmpty {
                 Text(overview)
                     .font(Theme.font(Theme.base))
                     .foregroundStyle(Theme.gray300)
-                    .lineLimit(3)
-                    .frame(maxWidth: Theme.px(672), alignment: .leading)
+                    .lineLimit(2)
+                    .frame(maxWidth: Theme.px(495), alignment: .leading)
             }
             HStack(spacing: Theme.px(8)) {
                 // Always there, so the buttons never shift; it takes focus only past the first title.
@@ -447,8 +447,8 @@ struct HeroCarousel: View {
             .focusSection()
         }
         .frame(maxWidth: Theme.px(768), alignment: .leading)
-        .padding(.leading, Theme.px(20))
-        .padding(.bottom, Theme.px(56))
+        .padding(.leading, Theme.px(42))
+        .padding(.bottom, followed == nil ? Theme.px(116) : Theme.px(56))
     }
 
     private var dots: some View {
@@ -459,9 +459,8 @@ struct HeroCarousel: View {
                     .frame(width: at == index ? Theme.px(24) : Theme.px(6), height: Theme.px(6))
             }
         }
-        .padding(.trailing, Theme.px(16))
-        .padding(.bottom, Theme.px(56))
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.bottom, Theme.px(70))
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 
