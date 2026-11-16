@@ -95,10 +95,10 @@ struct PlayFlow: ViewModifier {
         content
             .overlay(alignment: .bottom) {
                 if let finding {
-                    HStack(spacing: Theme.px(12)) {
-                        ProgressView()
+                    VStack(spacing: Theme.px(8)) {
                         Text(L("Finding a version of %@…", finding.isEpisode ? finding.displayTitle : finding.name ?? L("this")))
                             .font(Theme.font(Theme.base, .medium))
+                        ProgressView().progressViewStyle(.linear).frame(width: Theme.px(220))
                     }
                     .padding(.horizontal, Theme.px(20))
                     .padding(.vertical, Theme.px(12))

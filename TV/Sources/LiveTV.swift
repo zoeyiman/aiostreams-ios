@@ -45,17 +45,19 @@ struct LiveTVView: View {
     @State private var groupSearch = ""
     @State private var previewRequest = UUID()
     @FocusState private var focusedChannel: String?
+    @Namespace private var channelScope
     @State private var fullScreenPlayer = false
     @State private var favourites: [String: Bool] = [:]
     @State private var pendingFavourite: String?
     @State private var loadID = UUID()
+    @State private var focusFirstOnReload = false
 
     private static let page = 100
 
     private var showsGuide: Bool { guide && loaded && !channels.isEmpty }
 
     private var selected: Item? {
-        let preferred = selectedID ?? RecentChannels.ids(for: session.profileID).first
+        let preferred = selectedID
         return channels.first { $0.id == preferred } ?? channels.first
     }
 
@@ -117,12 +119,15 @@ struct LiveTVView: View {
                                 play(channel)
                             }
                             .focused($focusedChannel, equals: channel.id)
+                            .prefersDefaultFocus(channel.id == channels.first?.id, in: channelScope)
                             .accessibilityAddTraits(channel.id == selected.id ? .isSelected : [])
                             .onAppear { if channel.id == channels.last?.id { Task { await more() } } }
                         }
                     }
                     .padding(Theme.px(6))
                 }
+                .focusScope(channelScope)
+                .id(group)
                 .scrollClipDisabled(false)
                 .frame(width: geometry.size.width * 0.39)
                 .clipped()
@@ -347,6 +352,8 @@ struct LiveTVView: View {
     private func choose(_ id: String) {
         guard id != group else { return }
         selectedID = nil
+        focusedChannel = nil
+        focusFirstOnReload = true
         group = id
         UserDefaults.standard.set(id, forKey: "live.group")
     }
@@ -417,6 +424,10 @@ struct LiveTVView: View {
         total = count
         channels += found
         loaded = true
+        if focusFirstOnReload {
+            focusFirstOnReload = false
+            if !guide, let first = channels.first { focusedChannel = first.id }
+        }
         let fetched = await loadSchedules(for: found.map(\.id))
         guard !Task.isCancelled, asked == group, requestID == loadID else { return }
         schedules.merge(fetched) { _, new in new }

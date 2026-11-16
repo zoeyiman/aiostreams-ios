@@ -190,11 +190,17 @@ struct DetailView: View {
                     .buttonStyle(CircleIconStyle())
                 }
             }
-            if shown.isSeries && !session.isStock {
-                Button(shown.userData?.likes == false ? L("Undrop show") : L("Drop show")) {
-                    Task { await setDropped(shown.userData?.likes != false) }
+            if shown.isSeries || shown.type == "Movie" {
+                let dropped = shown.userData?.likes == false
+                Button {
+                    Task { await setDropped(!dropped) }
+                } label: {
+                    Image(systemName: dropped ? "hand.thumbsdown.fill" : "hand.thumbsdown")
                 }
-                .buttonStyle(SoftPillStyle())
+                .buttonStyle(CircleIconStyle())
+                .accessibilityLabel(shown.isSeries
+                    ? (dropped ? L("Undrop show") : L("Drop show"))
+                    : (dropped ? L("Remove dislike") : L("Dislike movie")))
             }
             if shown.isSeries {
                 Button { pickingEpisode = true } label: { Image(systemName: "shuffle") }
@@ -268,10 +274,13 @@ struct DetailView: View {
     // MARK: Cast
 
     @ViewBuilder private var castSection: some View {
-        let cast = Array((shown.people ?? []).filter { $0.type == "Actor" || $0.type == nil }.prefix(30))
+        let cast = (shown.people ?? []).filter { person in
+            person.type == nil || person.type?.caseInsensitiveCompare("Actor") == .orderedSame
+        }
         if !cast.isEmpty {
             VStack(alignment: .leading, spacing: Theme.px(16)) {
                 Text(L("Cast")).font(Theme.font(Theme.xl, .semibold)).pagePadding()
+                    .padding(.top, Theme.px(12))
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                         ForEach(cast) { person in
@@ -289,7 +298,7 @@ struct DetailView: View {
 
     private func personImage(_ person: Person) -> URL? {
         guard let client = session.client else { return nil }
-        return client.image(person.id, .primary, tag: person.primaryImageTag, height: 192)
+        return client.image(person.id, .primary, tag: person.primaryImageTag, width: 240)
     }
 
     // MARK: Trailer
@@ -334,12 +343,15 @@ struct DetailView: View {
 
     private func load() async {
         guard let client = session.client, let userId = session.userId else { return }
-        let found: ItemsResult? = try? await client.get("/Items", [
-            "userId": userId,
-            "Ids": item.id,
-            "Fields": "Genres,Overview,People,Taglines,Status,RemoteTrailers,ProviderIds",
-        ])
-        if let first = found?.items?.first { full = first }
+        let fields = "Genres,Overview,People,Taglines,Status,RemoteTrailers,ProviderIds"
+        if let detail: Item = try? await client.get("/Items/\(item.id)", ["userId": userId, "Fields": fields]) {
+            full = detail
+        } else {
+            let found: ItemsResult? = try? await client.get("/Items", [
+                "userId": userId, "Ids": item.id, "Fields": fields,
+            ])
+            if let first = found?.items?.first { full = first }
+        }
         let similarResult: ItemsResult? = try? await client.get("/Items/\(item.id)/Similar", ["userId": userId, "Limit": "12"])
         similar = similarResult?.items ?? []
         guard shown.isSeries else { return }

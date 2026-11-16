@@ -50,6 +50,7 @@ struct MainView: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
     @State private var place: Place = .home
+    @State private var settingsReturn: Place = .home
     /// The server's Live TV library, which only a server with channels lists.
     @State private var liveView: Item?
     @State private var paths: [Place: NavigationPath] = [:]
@@ -88,6 +89,7 @@ struct MainView: View {
                 page(place)
                     .routes()
                     .toolbar(.hidden, for: .navigationBar)
+                    .onExitCommand(perform: place == .settings ? nil : exitAction)
             }
             .id(place)
             // One area the focus can move into from the rail, wherever on the page it lands.
@@ -108,7 +110,7 @@ struct MainView: View {
             .mask { pageEdge }
 
             if top {
-                topTabs
+                topTabs.onExitCommand(perform: exitAction)
             }
 
             // The rail's own column, which rows scrolled under it disappear beneath. Over the
@@ -140,7 +142,7 @@ struct MainView: View {
             .ignoresSafeArea()
 
             if !top {
-                rail.background(alignment: .leading) {
+                rail.onExitCommand(perform: exitAction).background(alignment: .leading) {
                     if prefs.effectiveNavigationSurface != .solid {
                         Color.clear
                             .frame(width: Theme.px(open ? 256 : 80))
@@ -190,10 +192,12 @@ struct MainView: View {
             ServerEvents.shared.start(client: client)
             await openDemoScreen()
         }
-        // Back from another place's first page goes Home; from Home, it leaves the app.
-        .onExitCommand(perform: exitAction)
-        .onChange(of: place) { previous, _ in
-            paths.removeValue(forKey: previous)
+        .onChange(of: place) { previous, current in
+            if current == .settings || current == .account {
+                if previous != .settings && previous != .account { settingsReturn = previous }
+            } else if previous != .settings && previous != .account {
+                paths.removeValue(forKey: previous)
+            }
         }
         .onChange(of: railFocus) { previous, focused in
             topBarExit?.cancel()
@@ -255,7 +259,7 @@ struct MainView: View {
         case .calendar: CalendarView()
         case .activity: ActivityView()
         case .account: SignInView()
-        case .settings: SettingsView()
+        case .settings: SettingsView(closeSettings: returnFromSettings)
         }
     }
 
@@ -453,15 +457,16 @@ struct MainView: View {
         .disabled(DemoMode.keepsRailShut || railLocked)
     }
 
-    /// What Back does on a place's first page: from another place, go Home; on Home, leave,
-    /// with "Prevent accidental exit" on only at a second press, as the Android TV app asks.
+    private func returnFromSettings() {
+        place = settingsReturn
+        leaveRail()
+    }
+
+    /// Back first returns focus to the active tab. Only the Home tab can exit the app.
     private var exitAction: (() -> Void)? {
         guard paths[place]?.isEmpty ?? true else { return nil }
-        if place == .settings || place == .favourites {
-            return { railFocus = place }
-        }
-        if place != .home { return { place = .home } }
-        // Left to the system, Back leaves the app.
+        if place != .home { return { railFocus = place } }
+        if railFocus == nil { return { railFocus = place } }
         guard prefs.preventAccidentalExit, !exitArmed else { return nil }
         return {
             exitArmed = true
@@ -587,7 +592,7 @@ private struct TopTab: View {
         .padding(.horizontal, item == .account || item == .settings || !named ? Theme.px(10) : Theme.px(12))
         .frame(height: Theme.px(36))
         .foregroundStyle(focused ? Color.black : current ? Color.white : Theme.gray400)
-        .background(focused ? Color.white.opacity(0.94) : current ? Color.white.opacity(0.10) : Color.clear, in: Capsule())
+        .background(focused ? Color.white.opacity(0.94) : current ? Color.white.opacity(0.20) : Color.clear, in: Capsule())
     }
 }
 

@@ -180,7 +180,7 @@ struct VersionsView: View {
             .padding(Theme.px(40))
         } else {
             VStack(spacing: Theme.px(12)) {
-                ProgressView()
+                ProgressView().progressViewStyle(.linear).frame(width: Theme.px(200))
                 Text(L("Searching your addons…")).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray400)
             }
             .padding(Theme.px(48))
@@ -346,5 +346,72 @@ enum VersionSearches {
     static func take(_ itemId: String) -> Task<PlaybackInfo, Error>? {
         guard let entry = started.removeValue(forKey: itemId), Date().timeIntervalSince(entry.at) < fresh else { return nil }
         return entry.search
+    }
+}
+
+struct PlaybackVersionsPopup: View {
+    @EnvironmentObject private var session: Session
+    @FocusState private var focusedVersion: String?
+    @State private var sources: [MediaSource]?
+    @State private var failed = false
+    let item: Item
+    let activeID: String
+    let close: () -> Void
+    let choose: (MediaSource) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.px(10)) {
+            HStack {
+                Text(L("Versions")).font(Theme.font(Theme.lg, .semibold))
+                Spacer()
+                Button(action: close) { Image(systemName: "xmark") }
+                    .buttonStyle(CircleIconStyle())
+                    .accessibilityLabel(L("Close"))
+            }
+            if let sources, !sources.isEmpty {
+                ScrollView {
+                    LazyVStack(spacing: Theme.px(6)) {
+                        ForEach(sources, id: \.ownId) { source in
+                            Button {
+                                if source.ownId == activeID { close() } else { choose(source) }
+                            } label: {
+                                HStack(alignment: .top, spacing: 0) {
+                                    VersionCard(source: source, opening: false)
+                                    if source.ownId == activeID {
+                                        Image(systemName: "checkmark").padding(Theme.px(14))
+                                    }
+                                }
+                            }
+                            .buttonStyle(VersionCardStyle())
+                            .focused($focusedVersion, equals: source.ownId)
+                            .accessibilityAddTraits(source.ownId == activeID ? .isSelected : [])
+                        }
+                    }
+                }
+                .frame(height: Theme.px(310))
+            } else if failed || sources != nil {
+                Text(failed ? L("Could not load versions.") : L("No versions available."))
+                    .padding(.vertical, Theme.px(12))
+            } else {
+                ProgressView().progressViewStyle(.linear).padding(.vertical, Theme.px(12))
+                    .accessibilityLabel(L("Finding versions"))
+            }
+        }
+        .padding(Theme.px(16))
+        .frame(width: Theme.px(435))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.px(18)))
+        .focusSection()
+        .task(id: item.id) {
+            guard let client = session.client, let userId = session.userId else { failed = true; return }
+            do {
+                let info = try await client.playbackInfo(userId: userId, itemId: item.id)
+                guard !Task.isCancelled else { return }
+                sources = (info.mediaSources ?? []).filter { $0.aiostreams?.ytId == nil }
+                // Use a visible row for initial focus even when the current stream is far down the list.
+                focusedVersion = sources?.first?.ownId
+            } catch {
+                if !Task.isCancelled { failed = true }
+            }
+        }
     }
 }

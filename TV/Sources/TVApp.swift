@@ -41,7 +41,6 @@ private struct ProfileContent: View {
                 if session.asking { SignInView() } else { MainView() }
             }
         }
-        .id(prefs.themeKey)
         .environment(\.locale, AppLanguage.locale)
         .environment(\.layoutDirection, AppLanguage.rightToLeft ? .rightToLeft : .leftToRight)
         .environmentObject(prefs)

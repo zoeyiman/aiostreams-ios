@@ -45,7 +45,7 @@ private struct RowResultsView: View {
                 Button { dismiss() } label: {
                     Image(systemName: "chevron.backward")
                         .font(Theme.font(Theme.sm, .semibold))
-                        .frame(width: Theme.px(36), height: Theme.px(32))
+                        .frame(width: Theme.px(38), height: Theme.px(36))
                 }
                 .buttonStyle(RowBrowseArrowStyle())
                 .accessibilityLabel(L("Back"))
@@ -130,6 +130,7 @@ struct HomeRow: Identifiable {
 }
 
 enum MediaRowTarget: Hashable {
+    case browse
     case item(String)
 }
 
@@ -146,27 +147,25 @@ extension EnvironmentValues {
 
 /// The native equivalent of AIOStreams' data-nav-resume row entry.
 struct MediaRowFocus: ViewModifier {
-    let targets: [MediaRowTarget]
-    let reveal: (MediaRowTarget) -> Void
+    let entry: MediaRowTarget?
+    let resetShelf: () -> Void
     @FocusState private var focused: MediaRowTarget?
-    @State private var remembered: MediaRowTarget?
+
+    init(entry: MediaRowTarget? = .browse, resetShelf: @escaping () -> Void) {
+        self.entry = entry
+        self.resetShelf = resetShelf
+    }
 
     func body(content: Content) -> some View {
         content
             .environment(\.mediaRowFocus, $focused)
             .onChange(of: focused) { previous, current in
-                guard let current else { return }
-                // Moving within the row stays under the system's directional focus engine.
-                guard previous == nil else {
-                    remembered = current
-                    return
-                }
-                let entry = remembered.flatMap { targets.contains($0) ? $0 : nil } ?? targets.first
-                if let entry, entry != current {
-                    reveal(entry)
+                guard let current, let entry else { return }
+                if previous == nil, current != entry {
+                    resetShelf()
                     focused = entry
-                } else {
-                    remembered = current
+                } else if current == .browse {
+                    resetShelf()
                 }
             }
     }
@@ -201,8 +200,6 @@ struct ItemRow: View {
         return row.browseRoute ?? .rowResults(title: row.title, items: row.items)
     }
 
-    private var targets: [MediaRowTarget] { cards.map { .item($0.id) } }
-
     var body: some View {
         ScrollViewReader { scroller in
             VStack(alignment: .leading, spacing: Theme.px(12)) {
@@ -236,8 +233,10 @@ struct ItemRow: View {
                 .coordinateSpace(name: previewViewport)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
                 .edgeToEdge()
-                .modifier(MediaRowFocus(targets: targets) { scroller.scrollTo($0) })
             }
+            .modifier(MediaRowFocus {
+                if let first = cards.first { scroller.scrollTo(MediaRowTarget.item(first.id), anchor: .leading) }
+            })
         }
         .focusSection()
     }
@@ -269,6 +268,7 @@ struct RowBrowseArrow: View {
         }
         .buttonStyle(RowBrowseArrowStyle())
         .accessibilityLabel(L("See all: %@", title))
+        .modifier(MediaRowCardFocus(target: .browse))
     }
 }
 
@@ -295,7 +295,6 @@ struct TrailingIconLabel: LabelStyle {
 /// A title's poster, 168 × 252, with its name and year under it, as the web app's TV rows show;
 /// with `wide`, a still instead.
 struct PosterLink: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.cardFocused) private var cardFocused
     @Environment(\.mediaRowFocus) private var rowFocus
     @FocusState private var focused: Bool
@@ -395,7 +394,7 @@ struct PosterLink: View {
                 if on { cardFocused(item) }
                 if !on {
                     revealed = false
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { opened = false }
+                    opened = false
                 }
             }
             // Focus resting on it opens it out, as the web app's TV layout does.
@@ -403,7 +402,7 @@ struct PosterLink: View {
                 guard hasCardFocus, previewable else { return }
                 try? await Task.sleep(for: CardPreviewTiming.rest)
                 guard !Task.isCancelled, hasCardFocus else { return }
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { opened = true }
+                opened = true
             }
             .onGeometryChange(for: CGRect?.self) { geometry in
                 guard opened, let previewViewport else { return nil }
@@ -662,10 +661,22 @@ struct DiscoverView: View {
                 picks.append(item)
             }
         }
-        let genreWeights = (favouriteItems + watchedItems).flatMap { $0.genres ?? [] }
-            .reduce(into: [String: Int]()) { weights, genre in weights[genre, default: 0] += 1 }
+        // Watched episodes can omit genres. Their series is the recommendation seed.
+        let genreSeedIDs = Set(watchedItems.filter(\.isEpisode).compactMap(\.seriesId))
+        let series: ItemsResult? = genreSeedIDs.isEmpty ? nil : try? await client.get("/Items", [
+            "userId": userId, "Ids": genreSeedIDs.sorted().joined(separator: ","), "Fields": "Genres",
+        ])
+        guard !Task.isCancelled else { return }
+        var genreWeights: [String: Int] = [:]
+        var genreSeeds = Set<String>()
+        let tasteItems = favouriteItems + watchedItems.filter { !$0.isEpisode } + (series?.items ?? [])
+        for item in tasteItems where genreSeeds.insert(item.id).inserted {
+            for genre in item.genres ?? [] {
+                genreWeights[genre.lowercased(), default: 0] += 1
+            }
+        }
         func tasteScore(_ item: Item) -> Int {
-            (item.genres ?? []).reduce(0) { $0 + genreWeights[$1, default: 0] }
+            (item.genres ?? []).reduce(0) { $0 + genreWeights[$1.lowercased(), default: 0] }
         }
         let scores = picks.map { tasteScore($0) }
         let rankedIndices = picks.indices.sorted { left, right in
@@ -970,7 +981,6 @@ struct FavouritesView: View {
     @State private var items: [Item] = []
     @State private var loaded = false
     @State private var newestFirst = true
-    @State private var choosingOrder = false
     @State private var media: Media = .all
     @State private var watch: Watch = .all
     @State private var resumingIDs = Set<String>()
@@ -1028,27 +1038,23 @@ struct FavouritesView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.px(10)) {
-                PageTitle(text: L("Favorites"))
-                HStack(spacing: Theme.px(12)) {
-                    segments(Media.allCases, selection: $media, title: { $0.title })
-                        .accessibilityLabel(L("Media type"))
-                    Spacer(minLength: Theme.px(12))
-                    segments(Watch.allCases, selection: $watch, title: { $0.title })
-                        .accessibilityLabel(L("Watch status"))
-                    Button { choosingOrder = true } label: {
-                        Label(L("Date added"), systemImage: "chevron.down")
-                    }
-                    .buttonStyle(SoftPillStyle())
-                    Button { newestFirst.toggle() } label: {
-                        Image(systemName: newestFirst ? "arrow.down" : "arrow.up")
-                    }
-                    .buttonStyle(CircleIconStyle())
-                    .accessibilityLabel(newestFirst ? L("Newest first") : L("Oldest first"))
+        VStack(alignment: .leading, spacing: Theme.px(10)) {
+            PageTitle(text: L("Favorites"))
+            HStack(spacing: Theme.px(12)) {
+                segments(Media.allCases, selection: $media, title: { $0.title })
+                    .accessibilityLabel(L("Media type"))
+                Spacer(minLength: Theme.px(12))
+                segments(Watch.allCases, selection: $watch, title: { $0.title })
+                    .accessibilityLabel(L("Watch status"))
+                Button { newestFirst.toggle() } label: {
+                    Image(systemName: newestFirst ? "arrow.down" : "arrow.up")
                 }
-                .pagePadding()
-                .focusSection()
+                .buttonStyle(CircleIconStyle())
+                .accessibilityLabel(newestFirst ? L("Date added, newest first") : L("Date added, oldest first"))
+            }
+            .pagePadding()
+            .focusSection()
+            ScrollView {
                 if loaded && filtered.isEmpty {
                     Text(items.isEmpty ? L("Titles you favorite show here.") : L("No favorites match these filters."))
                         .font(Theme.font(Theme.base))
@@ -1058,15 +1064,11 @@ struct FavouritesView: View {
                         .focusable()
                 }
                 PosterGrid(items: filtered)
+                    .padding(.bottom, pageMargin)
             }
-            .padding(.bottom, pageMargin)
+            .edgeToEdge()
         }
-        .edgeToEdge()
         .task(id: newestFirst) { await load() }
-        .confirmationDialog(L("Date added"), isPresented: $choosingOrder, titleVisibility: .visible) {
-            Button(L("Newest first")) { newestFirst = true }
-            Button(L("Oldest first")) { newestFirst = false }
-        }
         .refreshOnReturn { await load() }
         .reloadOnWatchChange { await load() }
     }
@@ -1217,7 +1219,11 @@ struct SearchView: View {
                     .pagePadding()
                     .padding(.vertical, Theme.px(8))
                 }
-                .modifier(MediaRowFocus(targets: items.map { .item($0.id) }) { scroller.scrollTo($0) })
+                .modifier(MediaRowFocus(entry: items.first.map { .item($0.id) }) {
+                    if let first = items.first {
+                        scroller.scrollTo(MediaRowTarget.item(first.id), anchor: .leading)
+                    }
+                })
             }
         }
         .focusSection()

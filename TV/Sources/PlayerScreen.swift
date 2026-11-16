@@ -22,6 +22,7 @@ struct PlayerScreen: View {
     @State private var changingChannel = false
     @State private var switchingEpisode: Item?
     @State private var recentLive: [Item] = []
+    @State private var closing = false
 
     var body: some View {
         Group {
@@ -30,6 +31,7 @@ struct PlayerScreen: View {
                              recentLive: recentLive, tuneRecent: { channel in Task { await playChannel(channel) } },
                              pickEpisode: { next in Task { await playOn(next, showArtwork: true) } },
                              leave: close, changeChannel: { step in Task { await changeChannel(step) } },
+                             switchVersion: { source in Task { await switchVersion(to: source) } },
                              chooseAnotherVersion: {
                                  listVersions(model.request.item)
                                  finish()
@@ -60,9 +62,9 @@ struct PlayerScreen: View {
                     .allowsHitTesting(false)
                     .transition(.opacity)
             } else if let finding {
-                HStack(spacing: Theme.px(12)) {
-                    ProgressView()
+                VStack(spacing: Theme.px(8)) {
                     Text(L("Finding a version of %@…", "\(finding.displayTitle)")).font(Theme.font(Theme.base, .medium))
+                    ProgressView().progressViewStyle(.linear).frame(width: Theme.px(220))
                 }
                 .padding(.horizontal, Theme.px(20))
                 .padding(.vertical, Theme.px(12))
@@ -155,6 +157,22 @@ struct PlayerScreen: View {
         await start(PlayRequest(item: next, source: chosen, playSessionId: playSession, startMs: startMs, queue: rest))
     }
 
+    private func switchVersion(to source: MediaSource) async {
+        guard !closing, finding == nil, let current = model, let client = session.client,
+              let userId = session.userId else { return }
+        let item = current.request.item
+        finding = item
+        defer { finding = nil }
+        let info = try? await client.playbackInfo(userId: userId, itemId: item.id, sourceId: source.ownId)
+        guard !closing, model === current else { return }
+        let chosen = info?.mediaSources?.first(where: { $0.ownId == source.ownId }) ?? source
+        let position = current.position * 1000
+        LastVersions.set(item.id, chosen)
+        current.stop()
+        await start(PlayRequest(item: item, source: chosen, playSessionId: info?.playSessionId,
+                                startMs: position.isFinite ? position : nil, queue: current.request.queue))
+    }
+
     private func loadRecentLive() async {
         guard let client = session.client, let userId = session.userId else { return }
         let ids = Array(RecentChannels.ids(for: session.profileID).prefix(8))
@@ -167,6 +185,7 @@ struct PlayerScreen: View {
     }
 
     private func finish() {
+        closing = true
         // Leaving a watch party's title sits it out, staying in the party.
         if let entry = model?.request.partyEntry { PartyFollow.shared.leftPlayer(entry) }
         model?.stop()
@@ -218,11 +237,11 @@ enum UnattendedPlays {
 }
 
 private enum PlayerFocus: Hashable {
-    case surface, bar, play, back, forward, tracks, audio, chapters, speed, fit, skip, next, nextEpisode, keepWatching, stop, sync, episodes, stats, pip
+    case surface, bar, play, back, forward, tracks, audio, chapters, speed, fit, skip, next, nextEpisode, keepWatching, stop, sync, episodes, versions, stats, pip
 }
 
 private enum PlayerPanel: Hashable {
-    case tracks, audio, chapters, speed, sync, episodes
+    case tracks, audio, chapters, speed, sync, episodes, versions
 }
 
 private struct PlayerChrome: View {
@@ -237,6 +256,7 @@ private struct PlayerChrome: View {
     var leave: () -> Void = {}
     /// Up or down on a channel's video: the next or previous channel.
     var changeChannel: (Int) -> Void = { _ in }
+    let switchVersion: (MediaSource) -> Void
     let chooseAnotherVersion: () -> Void
 
     private var canChooseAnotherVersion: Bool {
@@ -391,6 +411,7 @@ private struct PlayerChrome: View {
                 .onTapGesture {
                     if heldSelect { heldSelect = false; return }
                     input()
+                    if model.isLive { model.togglePause() }
                     reveal(.play)
                 }
 
@@ -413,7 +434,7 @@ private struct PlayerChrome: View {
             }
 
             if model.waiting && model.failure == nil {
-                ProgressView().scaleEffect(1.6)
+                ProgressView().progressViewStyle(.linear).frame(width: Theme.px(160))
             }
             if let failure = model.failure { failureCard(failure) }
 
@@ -421,11 +442,6 @@ private struct PlayerChrome: View {
                 VStack(spacing: 0) {
                     Spacer()
                     controlsDock
-                }
-                .onMoveCommand { direction in
-                    guard model.request.item.isChannel, panel == nil else { return }
-                    if direction == .up { changeChannel(-1) }
-                    if direction == .down { changeChannel(1) }
                 }
                 .transition(.opacity)
             } else if model.paused && !model.isLive && model.failure == nil {
@@ -450,6 +466,18 @@ private struct PlayerChrome: View {
                     closePanel()
                     input()
                     pickEpisode(episode)
+                }
+                .padding(.trailing, Theme.px(42))
+                .padding(.bottom, Theme.px(108))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottomTrailing)))
+            }
+
+            if panel == .versions {
+                PlaybackVersionsPopup(item: model.request.item, activeID: model.request.source.ownId,
+                                      close: closePanel) { source in
+                    closePanel()
+                    switchVersion(source)
                 }
                 .padding(.trailing, Theme.px(42))
                 .padding(.bottom, Theme.px(108))
@@ -625,7 +653,7 @@ private struct PlayerChrome: View {
 
     private var controlsDock: some View {
         VStack(alignment: .leading, spacing: Theme.px(8)) {
-            if let panel, panel != .chapters, panel != .episodes {
+            if let panel, panel != .chapters, panel != .episodes, panel != .versions {
                 dockedPanel(panel)
             }
             if model.paused && !model.isLive && model.failure == nil && panel == nil {
@@ -645,8 +673,17 @@ private struct PlayerChrome: View {
                             ScrollView(.horizontal) {
                                 HStack(spacing: Theme.px(8)) {
                                     ForEach(recentLive) { channel in
-                                        Button(channel.name ?? L("Channel")) { tuneRecent(channel) }
-                                            .buttonStyle(SoftPillStyle(selected: channel.id == model.request.item.id))
+                                        Button { tuneRecent(channel) } label: {
+                                            VStack(alignment: .leading, spacing: Theme.px(5)) {
+                                                ChannelLogo(channel: channel)
+                                                    .frame(width: Theme.px(140), height: Theme.px(78))
+                                                Text(channel.name ?? L("Channel"))
+                                                    .font(Theme.font(Theme.xs, .medium)).lineLimit(1)
+                                            }
+                                            .frame(width: Theme.px(140), alignment: .leading)
+                                        }
+                                        .buttonStyle(CardStyle())
+                                        .accessibilityAddTraits(channel.id == model.request.item.id ? .isSelected : [])
                                     }
                                 }
                                 .padding(.vertical, Theme.px(4))
@@ -655,8 +692,8 @@ private struct PlayerChrome: View {
                         .focusSection()
                     }
                 } else {
-                    timeline
                     transportButtons.focusSection()
+                    timeline
                 }
             }
             .disabled(panel != nil)
@@ -688,11 +725,6 @@ private struct PlayerChrome: View {
     private var timeline: some View {
         let position = model.scrubTarget ?? model.position
         return VStack(alignment: .leading, spacing: Theme.px(4)) {
-            Text(model.duration.isFinite && model.duration > 0
-                 ? "\(clock(position)) / \(clock(model.duration))" : clock(position))
-                .font(Theme.font(Theme.xs, .medium))
-                .monospacedDigit()
-                .foregroundStyle(Theme.gray200)
             ProgressTrack(model: model, focused: focus == .bar)
                 .focusable(shown && panel == nil)
                 .focused($focus, equals: .bar)
@@ -702,13 +734,22 @@ private struct PlayerChrome: View {
                     switch direction {
                     case .left: if !moved(-1) { model.skip(-step) }
                     case .right: if !moved(1) { model.skip(step) }
-                    case .down: if !swiping { focus = .play }
                     default: break
                     }
                     wake()
                 }
                 .onTapGesture { model.togglePause(); wake() }
                 .overlay(alignment: .bottomLeading) { scrubPreview }
+            HStack {
+                Text(clock(position))
+                Spacer()
+                if model.paused && model.duration.isFinite && model.duration > 0 {
+                    Text("−\(clock(max(0, model.duration - position)))")
+                }
+            }
+            .font(Theme.font(Theme.xs, .medium))
+            .monospacedDigit()
+            .foregroundStyle(Theme.gray200)
         }
     }
 
@@ -763,25 +804,33 @@ private struct PlayerChrome: View {
                     .buttonStyle(ControlIconStyle(flat: !model.isLive))
                     .focused($focus, equals: .sync)
             }
-            if !model.chapters.isEmpty {
+            if prefs.chapterControl && !model.chapters.isEmpty {
                 Button { open(.chapters) } label: { Image(systemName: "rectangle.split.3x1") }
                     .buttonStyle(ControlIconStyle(flat: !model.isLive))
                     .accessibilityLabel(L("Chapters"))
                     .focused($focus, equals: .chapters)
             }
-            if !model.isLive {
+            if !model.isLive && prefs.speedControl {
                 Button { open(.speed) } label: { Image(systemName: "gauge.with.dots.needle.50percent") }
                     .buttonStyle(ControlIconStyle(flat: !model.isLive))
                     .focused($focus, equals: .speed)
             }
-            Button {
-                let all = PlayerModel.Fit.allCases
-                model.setFit(all[(all.firstIndex(of: model.fit)! + 1) % all.count])
-            } label: {
-                Image(systemName: model.fit == .fit ? "rectangle.arrowtriangle.2.outward" : model.fit == .crop ? "crop" : "arrow.left.and.right.square")
+            if canChooseAnotherVersion && prefs.versionControl {
+                Button { open(.versions) } label: { Image(systemName: "square.stack") }
+                    .buttonStyle(ControlIconStyle(flat: true))
+                    .accessibilityLabel(L("Versions"))
+                    .focused($focus, equals: .versions)
             }
-            .buttonStyle(ControlIconStyle(flat: !model.isLive))
-            .focused($focus, equals: .fit)
+            if prefs.fitControl {
+                Button {
+                    let all = PlayerModel.Fit.allCases
+                    model.setFit(all[(all.firstIndex(of: model.fit)! + 1) % all.count])
+                } label: {
+                    Image(systemName: model.fit == .fit ? "rectangle.arrowtriangle.2.outward" : model.fit == .crop ? "crop" : "arrow.left.and.right.square")
+                }
+                .buttonStyle(ControlIconStyle(flat: !model.isLive))
+                .focused($focus, equals: .fit)
+            }
             Button { stats.toggle() } label: { Image(systemName: stats ? "chart.bar.fill" : "chart.bar") }
                 .buttonStyle(ControlIconStyle(flat: !model.isLive))
                 .focused($focus, equals: .stats)
@@ -1080,6 +1129,7 @@ private struct PlayerChrome: View {
         case .speed: focus = .speed
         case .sync: focus = prefs.showSyncControls ? .sync : .play
         case .episodes: focus = .episodes
+        case .versions: focus = .versions
         case nil: break
         }
         wake()
@@ -1114,12 +1164,12 @@ private struct ProgressTrack: View {
                         .frame(width: Theme.px(3))
                         .offset(x: share(chapter.start) - Theme.px(1.5))
                 }
-                Capsule()
+                Circle()
                     .fill(.white)
-                    .frame(width: Theme.px(4), height: Theme.px(focused ? 16 : 12))
-                    .offset(x: share(model.scrubTarget ?? model.position) - Theme.px(2))
+                    .frame(width: Theme.px(focused ? 8 : 6), height: Theme.px(focused ? 8 : 6))
+                    .offset(x: share(model.scrubTarget ?? model.position) - Theme.px(focused ? 4 : 3))
             }
-            .frame(height: Theme.px(3))
+            .frame(height: Theme.px(2))
             .frame(maxHeight: .infinity)
         }
         .frame(height: Theme.px(16))
@@ -1196,6 +1246,7 @@ private struct PlayerPanelView: View {
         case .chapters: return L("Chapters")
         case .speed: return L("Speed")
         case .sync: return L("Sync")
+        case .versions: return L("Versions")
         case .episodes: return model.request.item.parentIndexNumber.map { L("Season %@", "\($0)") } ?? L("Episodes")
         }
     }
@@ -1311,7 +1362,7 @@ private struct PlayerPanelView: View {
                             }
                         }
                     }
-                case .sync, .episodes:
+                case .sync, .episodes, .versions:
                     EmptyView()
                 }
             }

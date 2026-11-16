@@ -264,11 +264,6 @@ final class Preferences: ObservableObject {
     /// The theme's colours, `#rrggbb`, where the web app's theme set them.
     var accentColor: String? { custom["accentColor"].flatMap { $0.isEmpty ? nil : $0 } }
     var backgroundColor: String? { custom["backgroundColor"].flatMap { $0.isEmpty ? nil : $0 } }
-    /// Changes when the theme or the language does, so the app draws itself again in them.
-    var themeKey: String {
-        "\(accentColor ?? "")|\(backgroundColor ?? "")|\(AppLanguage.resolve(text("language", "auto")))|\(tvNavigation)"
-    }
-
     // MARK: Skipping and the next episode, under the web app's keys (lib/settings)
 
     /// `ask` offers a button, `skip` skips by itself, `none` leaves it, for Intro, Recap, Outro,
@@ -302,6 +297,18 @@ final class Preferences: ObservableObject {
     }
     @Published var showSyncControls: Bool = UserDefaults.standard.bool(forKey: "controls.showSync") {
         didSet { UserDefaults.standard.set(showSyncControls, forKey: "controls.showSync") }
+    }
+    @Published var chapterControl = UserDefaults.standard.object(forKey: "controls.chapters") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(chapterControl, forKey: "controls.chapters") }
+    }
+    @Published var fitControl = UserDefaults.standard.object(forKey: "controls.fit") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(fitControl, forKey: "controls.fit") }
+    }
+    @Published var speedControl = UserDefaults.standard.object(forKey: "controls.speed") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(speedControl, forKey: "controls.speed") }
+    }
+    @Published var versionControl = UserDefaults.standard.object(forKey: "controls.versions") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(versionControl, forKey: "controls.versions") }
     }
     /// Pausing and skipping bring the controls up.
     @Published var showOnPauseAndSkip: Bool = UserDefaults.standard.object(forKey: "controls.showOnPauseAndSkip") as? Bool ?? true {
@@ -435,6 +442,7 @@ private func languageName(_ code: String) -> String {
 }
 
 struct SettingsView: View {
+    let closeSettings: () -> Void
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
     @State private var chooser: Chooser?
@@ -465,7 +473,8 @@ struct SettingsView: View {
     }
 
     /// You in the navigation opens Account; Settings opens Playback.
-    init(start: SettingsPage = .playback) {
+    init(start: SettingsPage = .playback, closeSettings: @escaping () -> Void = {}) {
+        self.closeSettings = closeSettings
         _page = State(initialValue: start)
     }
     @Namespace private var settingsScope
@@ -521,7 +530,9 @@ struct SettingsView: View {
         .padding(.top, Theme.px(24))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background {
-            LinearGradient(colors: [Color(red: 0.17, green: 0.26, blue: 0.43), Color(red: 0.07, green: 0.10, blue: 0.18)],
+            LinearGradient(colors: prefs.backgroundColor == nil
+                ? [Color(red: 0.17, green: 0.26, blue: 0.43), Color(red: 0.07, green: 0.10, blue: 0.18)]
+                : [Theme.background.opacity(0.84), Theme.background],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
                 .ignoresSafeArea()
         }
@@ -532,7 +543,7 @@ struct SettingsView: View {
     private var settingsBack: (() -> Void)? {
         if showingOptions { return dismissOptions }
         // Once focus is in the category list, the shell can move it to the active Settings tab.
-        if tab != nil { return nil }
+        if tab != nil { return closeSettings }
         return { tab = page }
     }
 
@@ -571,6 +582,10 @@ struct SettingsView: View {
                 note(L("The next episode plays in the version that matches the one you're watching. Where none does, the first plays, or with that off, the versions are listed. Back hides the offer."))
             }
             section(L("Player controls"), note: L("Kept on this Apple TV.")) {
+                row(L("Show chapters"), value: prefs.chapterControl ? L("On") : L("Off")) { prefs.chapterControl.toggle() }
+                row(L("Show fit and zoom"), value: prefs.fitControl ? L("On") : L("Off")) { prefs.fitControl.toggle() }
+                row(L("Show playback speed"), value: prefs.speedControl ? L("On") : L("Off")) { prefs.speedControl.toggle() }
+                row(L("Show versions"), value: prefs.versionControl ? L("On") : L("Off")) { prefs.versionControl.toggle() }
                 row(L("Skip step"), value: L("%ld seconds", prefs.seekStep)) {
                     chooser = Chooser(title: L("Skip step"), options: [5, 10, 15, 30].map { (L("%ld seconds", $0), String($0)) },
                                       current: String(prefs.seekStep)) { prefs.seekStep = Int($0) ?? 10 }

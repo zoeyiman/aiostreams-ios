@@ -71,6 +71,7 @@ struct HomeView: View {
     @State private var error: String?
     @State private var choice: VersionChoice?
     @State private var followed: Item?
+    @State private var followCandidate: Item?
 
     private var following: Bool { prefs.heroMode != "rotate" }
 
@@ -93,8 +94,14 @@ struct HomeView: View {
             }
         }
         .environment(\.cardFocused, { item in
-            if following && (item.type == "Movie" || item.isSeries) { followed = item }
+            if following && (item.type == "Movie" || item.isSeries) { followCandidate = item }
         })
+        .task(id: followCandidate?.id) {
+            guard let candidate = followCandidate, candidate.id != followed?.id else { return }
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled, following else { return }
+            followed = candidate
+        }
         .task(id: prefs.loaded) { if prefs.loaded && !loaded { await load() } }
         .onChange(of: prefs.featured) { _, _ in updateHero() }
         .refreshOnReturn { await load() }
@@ -380,18 +387,11 @@ struct HeroCarousel: View {
             let inset = Theme.railInset
             let artWash = prefs.flag("artBackground", false)
             HeroArtwork(url: session.client?.backdrop(item, height: 1080))
-                .mask {
-                    if artWash {
-                        LinearGradient(colors: [.clear, .black], startPoint: .bottom, endPoint: .center)
-                            .mask {
-                                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .center)
-                            }
-                    } else {
-                        Rectangle()
-                    }
-                }
                 .overlay {
                     ZStack {
+                        if artWash {
+                            LinearGradient(colors: [Theme.background.opacity(0.8), .clear], startPoint: .bottom, endPoint: .center)
+                        }
                         if !artWash {
                             LinearGradient(stops: [.init(color: Theme.background, location: 0),
                                                    .init(color: Theme.background.opacity(0.7), location: 0.35),
@@ -408,8 +408,8 @@ struct HeroCarousel: View {
                         }
                     }
                 }
-                .frame(width: geometry.size.width + inset, height: max(1, geometry.size.height - Theme.topBarInset))
-                .offset(x: -inset, y: Theme.topBarInset)
+                .frame(width: geometry.size.width + inset, height: geometry.size.height)
+                .offset(x: -inset)
         }
         .allowsHitTesting(false)
     }
@@ -585,8 +585,7 @@ struct WideRow: View {
     let play: (Item) -> Void
 
     var body: some View {
-        let targets = items.map { MediaRowTarget.item($0.id) }
-        return ScrollViewReader { scroller in
+        ScrollViewReader { scroller in
             VStack(alignment: .leading, spacing: Theme.px(12)) {
                 HStack(spacing: Theme.px(8)) {
                     Text(title).font(Theme.font(Theme.xl, .semibold))
@@ -605,8 +604,10 @@ struct WideRow: View {
                     .padding(.vertical, Theme.px(8))
                 }
                 .edgeToEdge()
-                .modifier(MediaRowFocus(targets: targets) { scroller.scrollTo($0) })
             }
+            .modifier(MediaRowFocus {
+                if let first = items.first { scroller.scrollTo(MediaRowTarget.item(first.id), anchor: .leading) }
+            })
         }
         .focusSection()
     }
