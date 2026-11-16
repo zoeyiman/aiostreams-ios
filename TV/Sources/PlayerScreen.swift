@@ -371,10 +371,9 @@ private struct PlayerChrome: View {
 
             if shown {
                 VStack(spacing: 0) {
-                    topBar
                     Spacer()
-                    if model.paused && !model.isLive && model.failure == nil { pauseInfo }
-                    bottomBar
+                    if panel == nil && model.paused && !model.isLive && model.failure == nil { pauseInfo }
+                    controlsDock
                 }
                 .onMoveCommand { direction in
                     guard model.request.item.isChannel, panel == nil else { return }
@@ -385,18 +384,6 @@ private struct PlayerChrome: View {
             } else if model.paused && !model.isLive && model.failure == nil {
                 pauseInfo.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                     .allowsHitTesting(false)
-            }
-
-            if let panel {
-                HStack {
-                    Spacer()
-                    PlayerPanelView(model: model, panel: panel, play: { episode in
-                        closePanel()
-                        input()
-                        playNext(episode)
-                    }) { closePanel() }
-                }
-                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
 
             if panel == nil && model.failure == nil {
@@ -494,47 +481,21 @@ private struct PlayerChrome: View {
         }
     }
 
-    // MARK: Top
+    // MARK: Transport
 
-    private var topBar: some View {
-        HStack(spacing: Theme.px(16)) {
-            Image(systemName: "arrow.left").font(.system(size: Theme.px(20), weight: .medium))
-            if !model.paused || model.isLive {
-                VStack(alignment: .leading, spacing: Theme.px(2)) {
-                    Text(model.request.item.isEpisode ? (model.request.item.seriesName ?? "") : (model.request.item.name ?? ""))
-                        .font(Theme.font(17, .semibold))
-                        .lineLimit(1)
-                    if model.request.item.isChannel, let programme = model.request.item.currentProgram?.name {
-                        Text(programme)
-                            .font(Theme.font(Theme.sm))
-                            .foregroundStyle(Theme.gray300)
-                            .lineLimit(1)
-                    }
-                    if model.request.item.isEpisode {
-                        Text(model.request.item.displayTitle)
-                            .font(Theme.font(Theme.sm))
-                            .foregroundStyle(Theme.gray300)
-                            .lineLimit(1)
-                    }
-                }
-            }
-            Spacer()
-            if prefs.showClock {
-                // The time of day, as the web app's player shows it.
-                TimelineView(.everyMinute) { context in
-                    Text(prefs.time(context.date))
-                        .font(Theme.font(17, .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.gray200)
-                }
+    private var transportTitle: some View {
+        let item = model.request.item
+        return VStack(alignment: .leading, spacing: Theme.px(3)) {
+            Text(item.isEpisode ? (item.seriesName ?? item.displayTitle) : (item.name ?? ""))
+                .font(Theme.font(Theme.lg, .semibold))
+                .lineLimit(1)
+            if let detail = item.isEpisode ? item.displayTitle : item.currentProgram?.name {
+                Text(detail).font(Theme.font(Theme.sm))
+                    .foregroundStyle(Theme.gray300)
+                    .lineLimit(1)
             }
         }
-        .padding(.horizontal, Theme.px(32))
-        .padding(.top, Theme.px(28))
-        .padding(.bottom, Theme.px(48))
-        .background(
-            LinearGradient(colors: [.black.opacity(0.85), .clear], startPoint: .top, endPoint: .bottom)
-        )
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var pauseInfo: some View {
@@ -553,135 +514,171 @@ private struct PlayerChrome: View {
         .frame(maxWidth: Theme.px(650), alignment: .leading)
         .shadow(color: .black.opacity(0.85), radius: Theme.px(4))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Theme.px(24))
+        .padding(.horizontal, Theme.px(48))
         .padding(.bottom, Theme.px(18))
     }
 
-    // MARK: Bottom
-
-    private var bottomBar: some View {
-        VStack(spacing: Theme.px(14)) {
-            if model.isLive {
-                // A live source has no timeline to move along.
-                Capsule().fill(Theme.brand500).frame(height: Theme.px(4))
-            } else {
-            ProgressTrack(model: model, focused: focus == .bar)
-                .focusable(shown && panel == nil)
-                .focused($focus, equals: .bar)
-                .onMoveCommand { direction in
+    private var controlsDock: some View {
+        VStack(alignment: .leading, spacing: Theme.px(10)) {
+            if let panel {
+                PlayerPanelView(model: model, panel: panel, play: { episode in
+                    closePanel()
                     input()
-                    switch direction {
-                    case .left: if !moved(-1) { model.skip(-step) }
-                    case .right: if !moved(1) { model.skip(step) }
-                    case .down: if !swiping { focus = .play }
-                    default: break
+                    playNext(episode)
+                }) { closePanel() }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if !model.paused || model.isLive || prefs.showClock {
+                HStack(alignment: .top) {
+                    if !model.paused || model.isLive { transportTitle } else { Spacer() }
+                    if prefs.showClock {
+                        TimelineView(.everyMinute) { context in
+                            Text(prefs.time(context.date))
+                                .font(Theme.font(Theme.sm, .medium))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.gray200)
+                        }
                     }
-                    wake()
                 }
-                .onTapGesture { model.togglePause(); wake() }
-                // Floats over the bar, so the controls stay where they are while it shows.
-                .overlay(alignment: .bottomLeading) { scrubPreview }
             }
-            HStack(spacing: Theme.px(8)) {
-                Button { model.togglePause() } label: {
-                    Image(systemName: model.paused ? "play.fill" : "pause.fill")
-                }
-                .buttonStyle(BigPlayStyle())
-                .focused($focus, equals: .play)
+
+            VStack(spacing: Theme.px(8)) {
+                transportButtons
+                    .focusSection()
                 if model.isLive {
-                    Text(L("LIVE"))
-                        .font(Theme.font(Theme.sm, .bold))
-                        .padding(.horizontal, Theme.px(10))
-                        .padding(.vertical, Theme.px(4))
-                        .background(Capsule().fill(Color.red.opacity(0.85)))
-                        .padding(.leading, Theme.px(12))
+                    Capsule().fill(.white.opacity(0.22)).frame(height: Theme.px(3))
                 } else {
-                    Button { model.skip(-step) } label: { Image(systemName: "gobackward.\(prefs.seekStep)") }
-                        .buttonStyle(ControlIconStyle())
-                        .focused($focus, equals: .back)
-                    Button { model.skip(step) } label: { Image(systemName: "goforward.\(prefs.seekStep)") }
-                        .buttonStyle(ControlIconStyle())
-                        .focused($focus, equals: .forward)
-                    HStack(spacing: 0) {
-                        let at = model.scrubTarget ?? model.position
-                        Text(clock(at))
-                        // The time left, or the whole length, as the setting asks.
-                        Text(prefs.showTimeLeft ? " / -" + clock(max(model.duration - at, 0)) : " / " + clock(model.duration))
-                            .foregroundStyle(Theme.gray400)
-                    }
-                    .font(Theme.font(17, .medium))
-                    .monospacedDigit()
-                    .padding(.leading, Theme.px(12))
-                }
-                Spacer()
-                if model.nextEpisode != nil && model.party == nil {
-                    Button { playOn(auto: false) } label: { Image(systemName: "forward.end.fill") }
-                        .buttonStyle(ControlIconStyle())
-                        .accessibilityLabel(model.request.item.isEpisode ? L("Next episode") : L("Play next"))
-                        .focused($focus, equals: .nextEpisode)
-                }
-                if model.request.item.isEpisode {
-                    Button { open(.episodes) } label: { Image(systemName: "list.and.film") }
-                        .buttonStyle(ControlIconStyle())
-                        .focused($focus, equals: .episodes)
-                }
-                // Audio and subtitles each have their own button, so a long subtitle list doesn't
-                // bury the audio tracks.
-                Button { open(.audio) } label: { Image(systemName: "speaker.wave.2") }
-                    .buttonStyle(ControlIconStyle())
-                    .focused($focus, equals: .audio)
-                Button { open(.tracks) } label: { Image(systemName: "captions.bubble") }
-                    .buttonStyle(ControlIconStyle())
-                    .focused($focus, equals: .tracks)
-                if !model.isLive {
-                    Button { open(.sync) } label: { Image(systemName: "timer") }
-                        .buttonStyle(ControlIconStyle())
-                        .focused($focus, equals: .sync)
-                }
-                if !model.chapters.isEmpty {
-                    Button { open(.chapters) } label: { Image(systemName: "list.bullet") }
-                        .buttonStyle(ControlIconStyle())
-                        .focused($focus, equals: .chapters)
-                }
-                if !model.isLive {
-                    Button { open(.speed) } label: { Image(systemName: "gauge.with.dots.needle.50percent") }
-                        .buttonStyle(ControlIconStyle())
-                        .focused($focus, equals: .speed)
-                }
-                Button {
-                    let all = PlayerModel.Fit.allCases
-                    model.setFit(all[(all.firstIndex(of: model.fit)! + 1) % all.count])
-                } label: {
-                    Image(systemName: model.fit == .fit ? "rectangle.arrowtriangle.2.outward" : model.fit == .crop ? "crop" : "arrow.left.and.right.square")
-                }
-                .buttonStyle(ControlIconStyle())
-                .focused($focus, equals: .fit)
-                Button { stats.toggle() } label: { Image(systemName: stats ? "chart.bar.fill" : "chart.bar") }
-                    .buttonStyle(ControlIconStyle())
-                    .focused($focus, equals: .stats)
-                if TVPictureInPicture.available(model.engine) {
-                    Button {
-                        TVPictureInPicture.shared.start(model) { leave() }
-                    } label: { Image(systemName: "pip.enter") }
-                        .buttonStyle(ControlIconStyle())
-                        .focused($focus, equals: .pip)
+                    timeline
                 }
             }
-            .focusSection()
+            .disabled(panel != nil)
         }
-        // Where the controls start, which the subtitles are kept above while they show.
+        // Reserve the space occupied by the menus as well as the transport for subtitles.
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.frame(in: .global).minY
         } action: { top in
             controlsTop = top
             if shown { model.liftSubtitles(liftShare) }
         }
-        .padding(.horizontal, Theme.px(20))
-        .padding(.bottom, Theme.px(16))
-        .padding(.top, Theme.px(64))
-        .background(
-            LinearGradient(colors: [.black.opacity(0.9), .black.opacity(0.5), .clear], startPoint: .bottom, endPoint: .top)
-        )
+        .padding(.horizontal, Theme.px(48))
+        .padding(.bottom, Theme.px(26))
+        .padding(.top, Theme.px(44))
+        .background {
+            LinearGradient(colors: [.black.opacity(0.92), .black.opacity(0.62), .clear],
+                           startPoint: .bottom, endPoint: .top)
+        }
+    }
+
+    private var timeline: some View {
+        let position = model.scrubTarget ?? model.position
+        return VStack(spacing: Theme.px(4)) {
+            ProgressTrack(model: model, focused: focus == .bar)
+                .focusable(shown && panel == nil)
+                .focused($focus, equals: .bar)
+                .accessibilityLabel(L("Playback position"))
+                .onMoveCommand { direction in
+                    input()
+                    switch direction {
+                    case .left: if !moved(-1) { model.skip(-step) }
+                    case .right: if !moved(1) { model.skip(step) }
+                    case .up: if !swiping { focus = .play }
+                    default: break
+                    }
+                    wake()
+                }
+                .onTapGesture { model.togglePause(); wake() }
+                .overlay(alignment: .bottomLeading) { scrubPreview }
+            HStack {
+                Text(clock(position))
+                Spacer()
+                Text(prefs.showTimeLeft ? "−" + clock(max(model.duration - position, 0)) : clock(model.duration))
+            }
+            .font(Theme.font(Theme.xs, .medium))
+            .monospacedDigit()
+            .foregroundStyle(Theme.gray200)
+        }
+    }
+
+    private var transportButtons: some View {
+        HStack(spacing: Theme.px(8)) {
+            Button { model.togglePause() } label: {
+                Image(systemName: model.paused ? "play.fill" : "pause.fill")
+            }
+            .buttonStyle(ControlIconStyle())
+            .accessibilityLabel(model.paused ? L("Play") : L("Pause"))
+            .focused($focus, equals: .play)
+            if model.isLive {
+                Text(L("LIVE"))
+                    .font(Theme.font(Theme.sm, .bold))
+                    .padding(.horizontal, Theme.px(10))
+                    .padding(.vertical, Theme.px(4))
+                    .background(Capsule().fill(Color.red.opacity(0.85)))
+                    .padding(.leading, Theme.px(12))
+            } else {
+                Button { model.skip(-step) } label: { Image(systemName: "gobackward.\(prefs.seekStep)") }
+                    .buttonStyle(ControlIconStyle())
+                    .focused($focus, equals: .back)
+                Button { model.skip(step) } label: { Image(systemName: "goforward.\(prefs.seekStep)") }
+                    .buttonStyle(ControlIconStyle())
+                    .focused($focus, equals: .forward)
+
+            }
+            Spacer()
+            if model.nextEpisode != nil && model.party == nil {
+                Button { playOn(auto: false) } label: { Image(systemName: "forward.end.fill") }
+                    .buttonStyle(ControlIconStyle())
+                    .accessibilityLabel(model.request.item.isEpisode ? L("Next episode") : L("Play next"))
+                    .focused($focus, equals: .nextEpisode)
+            }
+            if model.request.item.isEpisode {
+                Button { open(.episodes) } label: { Image(systemName: "list.and.film") }
+                    .buttonStyle(ControlIconStyle())
+                    .focused($focus, equals: .episodes)
+            }
+            // Audio and subtitles each have their own button, so a long subtitle list doesn't
+            // bury the audio tracks.
+            Button { open(.audio) } label: { Image(systemName: "speaker.wave.2") }
+                .buttonStyle(ControlIconStyle())
+                .accessibilityLabel(L("Audio"))
+                .focused($focus, equals: .audio)
+            Button { open(.tracks) } label: { Image(systemName: "captions.bubble") }
+                .buttonStyle(ControlIconStyle())
+                .accessibilityLabel(L("Subtitles"))
+                .focused($focus, equals: .tracks)
+            if !model.isLive {
+                Button { open(.sync) } label: { Image(systemName: "timer") }
+                    .buttonStyle(ControlIconStyle())
+                    .focused($focus, equals: .sync)
+            }
+            if !model.chapters.isEmpty {
+                Button { open(.chapters) } label: { Image(systemName: "rectangle.split.3x1") }
+                    .buttonStyle(ControlIconStyle())
+                    .accessibilityLabel(L("Chapters"))
+                    .focused($focus, equals: .chapters)
+            }
+            if !model.isLive {
+                Button { open(.speed) } label: { Image(systemName: "gauge.with.dots.needle.50percent") }
+                    .buttonStyle(ControlIconStyle())
+                    .focused($focus, equals: .speed)
+            }
+            Button {
+                let all = PlayerModel.Fit.allCases
+                model.setFit(all[(all.firstIndex(of: model.fit)! + 1) % all.count])
+            } label: {
+                Image(systemName: model.fit == .fit ? "rectangle.arrowtriangle.2.outward" : model.fit == .crop ? "crop" : "arrow.left.and.right.square")
+            }
+            .buttonStyle(ControlIconStyle())
+            .focused($focus, equals: .fit)
+            Button { stats.toggle() } label: { Image(systemName: stats ? "chart.bar.fill" : "chart.bar") }
+                .buttonStyle(ControlIconStyle())
+                .focused($focus, equals: .stats)
+            if TVPictureInPicture.available(model.engine) {
+                Button {
+                    TVPictureInPicture.shared.start(model) { leave() }
+                } label: { Image(systemName: "pip.enter") }
+                    .buttonStyle(ControlIconStyle())
+                    .focused($focus, equals: .pip)
+            }
+        }
     }
 
     private static let previewWidth = Theme.px(240)
@@ -994,7 +991,7 @@ private struct ProgressTrack: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(.white.opacity(0.2))
                 Capsule().fill(.white.opacity(0.35)).frame(width: share(model.buffered))
-                Capsule().fill(Theme.ring).frame(width: share(model.scrubTarget ?? model.position))
+                Capsule().fill(.white).frame(width: share(model.scrubTarget ?? model.position))
                 ForEach(model.chapters.dropFirst(), id: \.id) { chapter in
                     Rectangle()
                         .fill(Color.black)
@@ -1007,7 +1004,7 @@ private struct ProgressTrack: View {
                     .offset(x: share(model.scrubTarget ?? model.position) - Theme.px(7))
                     .opacity(focused || model.scrubTarget != nil ? 1 : 0)
             }
-            .frame(height: focused ? Theme.px(8) : Theme.px(4))
+            .frame(height: focused ? Theme.px(6) : Theme.px(3))
             .frame(maxHeight: .infinity)
         }
         .frame(height: Theme.px(16))
@@ -1033,49 +1030,23 @@ private struct SkipStyle: ButtonStyle {
     }
 }
 
-/// The big white play button.
-private struct BigPlayStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Inner(label: configuration.label)
-    }
-
-    private struct Inner<Label: View>: View {
-        @Environment(\.isFocused) private var focused
-        let label: Label
-
-        var body: some View {
-            label
-                .font(.system(size: Theme.px(20), weight: .bold))
-                .foregroundStyle(.black)
-                .frame(width: Theme.px(52), height: Theme.px(52))
-                .background(Circle().fill(.white))
-                .focusRing(focused)
-        }
-    }
-}
-
-/// A bare icon in the control row, lit and ringed when focused.
+/// A compact transport control with a monochrome focus state.
 private struct ControlIconStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        Inner(label: configuration.label)
-    }
-
-    private struct Inner<Label: View>: View {
-        @Environment(\.isFocused) private var focused
-        let label: Label
-
-        var body: some View {
-            label
-                .font(.system(size: Theme.px(22), weight: .regular))
-                .foregroundStyle(focused ? Color.white : Color.white.opacity(0.85))
-                .frame(width: Theme.px(44), height: Theme.px(44))
-                .background(Circle().fill(focused ? Color.white.opacity(0.16) : .clear))
-                .focusRing(focused)
+        Focused { focused in
+            configuration.label
+                .font(.system(size: Theme.px(17), weight: .semibold))
+                .foregroundStyle(focused ? Color.black : Color.white)
+                .frame(width: Theme.px(38), height: Theme.px(38))
+                .background(Circle().fill(focused ? Color.white : Color.black.opacity(0.42)))
+                .overlay(Circle().strokeBorder(.white.opacity(focused ? 0 : 0.13), lineWidth: Theme.px(1)))
+                .scaleEffect(focused ? 1.07 : 1)
+                .opacity(configuration.isPressed ? 0.8 : 1)
         }
     }
 }
 
-/// A list beside the video: audio and subtitles, chapters, or speed.
+/// A bounded menu or a chapter strip docked to the transport.
 private struct PlayerPanelView: View {
     @EnvironmentObject private var session: Session
     @ObservedObject var model: PlayerModel
@@ -1083,6 +1054,7 @@ private struct PlayerPanelView: View {
     /// Plays another episode, from the Episodes panel.
     let play: (Item) -> Void
     let done: () -> Void
+    @Namespace private var menuFocus
     @State private var episodes: [Item] = []
     @EnvironmentObject private var prefs: Preferences
     /// Subtitles in other languages, which List only my languages keeps under More languages.
@@ -1101,12 +1073,82 @@ private struct PlayerPanelView: View {
 
     private static let speeds: [Double] = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
+    private var headerTitle: String {
+        switch panel {
+        case .tracks: return L("Subtitles")
+        case .audio: return L("Audio")
+        case .chapters: return L("Chapters")
+        case .speed: return L("Speed")
+        case .sync: return L("Sync")
+        case .episodes: return model.request.item.parentIndexNumber.map { L("Season %@", "\($0)") } ?? L("Episodes")
+        }
+    }
+
+    private var currentChapter: PlayerChapter? {
+        model.chapters.last { $0.start <= model.position }
+    }
+
+    private var chapters: some View {
+        ScrollViewReader { scroll in
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: Theme.px(15)) {
+                    ForEach(model.chapters, id: \.id) { chapter in
+                        let current = chapter.id == currentChapter?.id
+                        ChapterTile(model: model, chapter: chapter, time: clock(chapter.start),
+                                    current: current, namespace: menuFocus) {
+                            model.seek(to: chapter.start)
+                            done()
+                        }
+                        .id(chapter.id)
+                    }
+                }
+                .padding(.horizontal, Theme.px(6))
+                .padding(.vertical, Theme.px(7))
+            }
+            .frame(height: Theme.px(151))
+            .task {
+                if let chapter = currentChapter { scroll.scrollTo(chapter.id, anchor: .center) }
+            }
+        }
+    }
+
     var body: some View {
+        VStack(alignment: .leading, spacing: Theme.px(10)) {
+            HStack {
+                Text(headerTitle).font(Theme.font(Theme.lg, .semibold))
+                Spacer()
+                Button(action: done) { Image(systemName: "xmark") }
+                    .buttonStyle(ControlIconStyle())
+                    .accessibilityLabel(L("Close"))
+            }
+            .padding(.leading, Theme.px(8))
+            if panel == .chapters {
+                chapters
+            } else {
+                choices
+            }
+        }
+        .padding(Theme.px(14))
+        .frame(maxWidth: panel == .chapters ? .infinity : Theme.px(460))
+        .background {
+            RoundedRectangle(cornerRadius: Theme.px(22))
+                .fill(.regularMaterial)
+                .overlay { RoundedRectangle(cornerRadius: Theme.px(22)).fill(.black.opacity(0.38)) }
+        }
+        .overlay(RoundedRectangle(cornerRadius: Theme.px(22)).strokeBorder(.white.opacity(0.15), lineWidth: Theme.px(1)))
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .focusScope(menuFocus)
+        .focusSection()
+        .onExitCommand(perform: done)
+        .task(id: panel) { if panel == .episodes { await loadEpisodes() } }
+    }
+
+    private var choices: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.px(20)) {
                 switch panel {
                 case .tracks:
-                    group(L("Subtitles")) {
+                    group(nil) {
                         row(L("Off"), on: model.activeSubtitle == nil) { model.selectSubtitle(nil) }
                         ForEach(listedSubtitles) { track in
                             row(label(track), on: track.id == model.activeSubtitle) { model.selectSubtitle(track.id) }
@@ -1116,7 +1158,7 @@ private struct PlayerPanelView: View {
                         }
                     }
                 case .audio:
-                    group(L("Audio")) {
+                    group(nil) {
                         if model.audioTracks.isEmpty {
                             Text(L("This version has one audio track."))
                                 .font(Theme.font(Theme.sm))
@@ -1131,16 +1173,9 @@ private struct PlayerPanelView: View {
                         }
                     }
                 case .chapters:
-                    group(L("Chapters")) {
-                        ForEach(model.chapters, id: \.id) { chapter in
-                            ChapterRow(model: model, chapter: chapter, time: clock(chapter.start)) {
-                                model.seek(to: chapter.start)
-                                done()
-                            }
-                        }
-                    }
+                    EmptyView()
                 case .speed:
-                    group(L("Speed")) {
+                    group(nil) {
                         ForEach(Self.speeds, id: \.self) { value in
                             row(value == 1 ? L("Normal") : String(format: "%g×", value), on: abs(model.speed - value) < 0.01) {
                                 model.setSpeed(value)
@@ -1159,7 +1194,7 @@ private struct PlayerPanelView: View {
                         .foregroundStyle(Theme.gray400)
                         .padding(.horizontal, Theme.px(12))
                 case .episodes:
-                    group(model.request.item.parentIndexNumber.map { L("Season %@", "\($0)") } ?? L("Episodes")) {
+                    group(nil) {
                         if episodes.isEmpty { ProgressView().frame(maxWidth: .infinity) }
                         ForEach(episodes) { episode in
                             row(episode.displayTitle, detail: episode.userData?.played == true ? L("Watched") : episode.timeLeft,
@@ -1170,14 +1205,9 @@ private struct PlayerPanelView: View {
                     }
                 }
             }
-            .padding(Theme.px(20))
+            .padding(Theme.px(4))
         }
-        .frame(width: Theme.px(400))
-        .frame(maxHeight: .infinity)
-        .background(Color(white: 11 / 255).opacity(0.95))
-        .focusSection()
-        .onExitCommand(perform: done)
-        .task(id: panel) { if panel == .episodes { await loadEpisodes() } }
+        .frame(height: Theme.px(224))
     }
 
     /// The season playing, as its show lists it.
@@ -1207,13 +1237,15 @@ private struct PlayerPanelView: View {
         .padding(.horizontal, Theme.px(8))
     }
 
-    private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func group<Content: View>(_ title: String?, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: Theme.px(4)) {
-            Text(title)
-                .font(Theme.font(Theme.sm, .semibold))
-                .foregroundStyle(Theme.gray400)
-                .padding(.horizontal, Theme.px(12))
-                .padding(.bottom, Theme.px(4))
+            if let title {
+                Text(title)
+                    .font(Theme.font(Theme.sm, .semibold))
+                    .foregroundStyle(Theme.gray400)
+                    .padding(.horizontal, Theme.px(12))
+                    .padding(.bottom, Theme.px(4))
+            }
             content()
         }
     }
@@ -1221,20 +1253,22 @@ private struct PlayerPanelView: View {
     private func row(_ text: String, detail: String? = nil, on: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: Theme.px(10)) {
-                Image(systemName: "checkmark")
-                    .font(.system(size: Theme.px(13), weight: .semibold))
-                    .opacity(on ? 1 : 0)
                 Text(text).font(Theme.font(15)).lineLimit(1)
                 Spacer(minLength: Theme.px(8))
                 if let detail {
-                    Text(detail).font(Theme.font(Theme.xs)).foregroundStyle(Theme.gray400).monospacedDigit()
+                    Text(detail).font(Theme.font(Theme.xs)).opacity(0.72).monospacedDigit().lineLimit(1)
                 }
+                Image(systemName: "checkmark")
+                    .font(.system(size: Theme.px(13), weight: .semibold))
+                    .opacity(on ? 1 : 0)
             }
             .padding(.horizontal, Theme.px(12))
             .frame(height: Theme.px(40))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(PanelRowStyle())
+        .accessibilityAddTraits(on ? .isSelected : [])
+        .prefersDefaultFocus(on, in: menuFocus)
     }
 
     /// What tells audio tracks apart besides their language: the format, channels, Atmos or DTS:X,
@@ -1298,42 +1332,62 @@ private struct PanelRowStyle: ButtonStyle {
 }
 
 /// A chapter with its picture: the server's, else a frame or trickplay thumbnail the model makes.
-private struct ChapterRow: View {
+private struct ChapterTile: View {
     @ObservedObject var model: PlayerModel
     let chapter: PlayerChapter
     let time: String
+    let current: Bool
+    let namespace: Namespace.ID
     let action: () -> Void
     @State private var picture: CGImage?
 
+    private let width = Theme.px(184)
+
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Theme.px(12)) {
-                ZStack {
+            VStack(alignment: .leading, spacing: Theme.px(5)) {
+                ZStack(alignment: .bottomTrailing) {
                     Color(white: 0.12)
                     if let url = chapter.image {
                         AsyncImage(url: url) { phase in
-                            if case .success(let image) = phase { image.resizable().aspectRatio(contentMode: .fill) }
+                            if case .success(let image) = phase { image.resizable().scaledToFill() }
                         }
                     } else if let picture {
-                        Image(decorative: picture, scale: 1).resizable().aspectRatio(contentMode: .fill)
+                        Image(decorative: picture, scale: 1).resizable().scaledToFill()
                     }
+                    Text(time).font(Theme.font(Theme.xs, .semibold)).monospacedDigit()
+                        .padding(.horizontal, Theme.px(6))
+                        .padding(.vertical, Theme.px(3))
+                        .background(.black.opacity(0.74), in: Capsule())
+                        .padding(Theme.px(6))
                 }
-                .frame(width: Theme.px(112), height: Theme.px(63))
-                .clipShape(RoundedRectangle(cornerRadius: Theme.px(6), style: .continuous))
-                VStack(alignment: .leading, spacing: Theme.px(2)) {
-                    Text(chapter.name.isEmpty ? L("Chapter %@", "\(chapter.id + 1)") : chapter.name)
-                        .font(Theme.font(15)).lineLimit(2)
-                    Text(time).font(Theme.font(Theme.xs)).foregroundStyle(Theme.gray400).monospacedDigit()
-                }
-                Spacer(minLength: 0)
+                .frame(width: width, height: width * 9 / 16)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: Theme.px(10)))
+                .overlay(RoundedRectangle(cornerRadius: Theme.px(10))
+                    .strokeBorder(.white.opacity(current ? 0.8 : 0.18), lineWidth: Theme.px(1)))
+                Text(chapter.name.isEmpty ? L("Chapter %@", "\(chapter.id + 1)") : chapter.name)
+                    .font(Theme.font(Theme.sm, .medium))
+                    .lineLimit(1)
             }
-            .padding(Theme.px(8))
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: width, alignment: .leading)
         }
-        .buttonStyle(PanelRowStyle())
+        .buttonStyle(ChapterTileStyle())
+        .prefersDefaultFocus(current, in: namespace)
+        .accessibilityAddTraits(current ? .isSelected : [])
         .task(id: chapter.id) {
-            // A little in, past a chapter's opening black.
             if chapter.image == nil { picture = await model.picture(at: chapter.start + 2) }
+        }
+    }
+}
+
+private struct ChapterTileStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Focused { focused in
+            configuration.label
+                .opacity(focused ? 1 : 0.82)
+                .scaleEffect(focused ? 1.045 : 1)
+                .opacity(configuration.isPressed ? 0.8 : 1)
         }
     }
 }
