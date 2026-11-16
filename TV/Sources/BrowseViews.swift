@@ -95,18 +95,10 @@ struct ItemRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.px(12)) {
-            Group {
-                if row.collection, let library = row.library {
-                    NavigationLink(value: Route.library(library)) {
-                        HStack(spacing: Theme.px(8)) {
-                            Text(row.title).font(Theme.font(Theme.xl, .semibold))
-                            Text(L("Collections")).foregroundStyle(Theme.gray400)
-                            Image(systemName: "chevron.right").foregroundStyle(Theme.gray400)
-                        }
-                    }
-                    .buttonStyle(RowStyle())
-                } else {
-                    Text(row.title).font(Theme.font(Theme.xl, .semibold))
+            HStack(spacing: Theme.px(8)) {
+                Text(row.title).font(Theme.font(Theme.xl, .semibold))
+                if row.collection, row.library != nil {
+                    Text(L("Collections")).foregroundStyle(Theme.gray400)
                 }
             }
             .pagePadding()
@@ -570,6 +562,13 @@ struct LibraryView: View {
     @State private var activeQuery: Query?
     @State private var loadID = UUID()
     @State private var failure: String?
+    @State private var folders: [CollectionPage] = []
+    @State private var visitedFolders: Set<String> = []
+
+    private struct CollectionPage {
+        let parent: String
+        var offset = 0
+    }
 
     private struct Query: Equatable {
         let collection: CollectionFilter
@@ -621,10 +620,22 @@ struct LibraryView: View {
             HStack {
                 Text(L("In this collection")).font(Theme.font(Theme.xl, .semibold))
                 Spacer()
-                ForEach(CollectionFilter.allCases, id: \.self) { option in
-                    Button(option.label) { collectionFilter = option }
-                        .buttonStyle(SoftPillStyle(selected: collectionFilter == option))
+                HStack(spacing: Theme.px(3)) {
+                    ForEach(CollectionFilter.allCases, id: \.self) { option in
+                        Button {
+                            collectionFilter = option
+                        } label: {
+                            Text(option.label)
+                                .font(Theme.font(Theme.sm, .semibold))
+                                .padding(.horizontal, Theme.px(12))
+                                .padding(.vertical, Theme.px(6))
+                        }
+                        .buttonStyle(CollectionSegmentStyle(selected: collectionFilter == option))
+                        .accessibilityAddTraits(collectionFilter == option ? .isSelected : [])
+                    }
                 }
+                .padding(Theme.px(4))
+                .background(.white.opacity(0.12), in: Capsule())
             }
             .focusSection()
         }
@@ -641,6 +652,8 @@ struct LibraryView: View {
         items = []
         offset = 0
         total = Int.max
+        folders = isBoxSet ? [CollectionPage(parent: view.id)] : []
+        visitedFolders = [view.id]
         loading = true
         failure = nil
         guard let client = session.client, let userId = session.userId else { loading = false; return }
@@ -653,7 +666,7 @@ struct LibraryView: View {
     }
 
     private func more() async {
-        guard !loading, offset < total, let asked = activeQuery, asked == query,
+        guard !loading, (isBoxSet ? !folders.isEmpty : offset < total), let asked = activeQuery, asked == query,
               let client = session.client, let userId = session.userId else { return }
         let id = loadID
         loading = true
@@ -661,18 +674,22 @@ struct LibraryView: View {
         defer { if id == loadID { loading = false } }
 
         do {
+            if isBoxSet {
+                try await loadCollectionPage(client: client, userId: userId, asked: asked, id: id)
+                return
+            }
             let result: ItemsResult = try await client.get("/Items", [
                 "userId": userId,
                 "ParentId": view.id,
                 "StartIndex": String(offset),
                 "Limit": String(Self.page),
-                "IncludeItemTypes": isBoxSet ? asked.collection.itemTypes : libraryTypes(view),
+                "IncludeItemTypes": libraryTypes(view),
                 "GenreIds": genre,
                 "Recursive": "true",
                 "EnableTotalRecordCount": "true",
                 "Filters": asked.filter?.jellyfin,
-                "SortBy": session.isStock && !isBoxSet ? asked.sort.fields : nil,
-                "SortOrder": session.isStock && !isBoxSet ? (asked.descending ? "Descending" : "Ascending") : nil,
+                "SortBy": session.isStock ? asked.sort.fields : nil,
+                "SortOrder": session.isStock ? (asked.descending ? "Descending" : "Ascending") : nil,
             ])
             guard !Task.isCancelled, id == loadID, asked == query else { return }
             let page = result.items ?? []
@@ -682,6 +699,60 @@ struct LibraryView: View {
             total = page.isEmpty ? offset : (result.totalRecordCount ?? Int.max)
         } catch {
             if !Task.isCancelled, id == loadID, asked == query { failure = error.localizedDescription }
+        }
+    }
+
+    /// Some AIOStreams/AIOMetadata box sets list subfolders before their titles. Walk those on
+    /// behalf of the viewer and apply the type filter to the actual movies and shows.
+    private func loadCollectionPage(client: JellyfinClient, userId: String, asked: Query, id: UUID) async throws {
+        var pending = folders
+        var visited = visitedFolders
+        var seen = Set(items.map(\.id))
+        var titles: [Item] = []
+
+        while let folder = pending.first, titles.count < Self.page {
+            let result: ItemsResult = try await client.get("/Items", [
+                "userId": userId,
+                "ParentId": folder.parent,
+                "StartIndex": String(folder.offset),
+                "Limit": String(Self.page),
+                "Recursive": "false",
+                "EnableTotalRecordCount": "true",
+            ])
+            guard !Task.isCancelled, id == loadID, asked == query else { return }
+            let page = result.items ?? []
+            let nextOffset = folder.offset + page.count
+            if page.isEmpty || nextOffset >= (result.totalRecordCount ?? Int.max) {
+                pending.removeFirst()
+            } else {
+                pending[0].offset = nextOffset
+            }
+            for item in page {
+                if item.isFolder {
+                    if visited.insert(item.id).inserted { pending.append(CollectionPage(parent: item.id)) }
+                } else if (item.type == "Movie" || item.isSeries),
+                          asked.collection.itemTypes.map({ $0 == item.type }) ?? true,
+                          seen.insert(item.id).inserted {
+                    titles.append(item)
+                }
+            }
+        }
+
+        folders = pending
+        visitedFolders = visited
+        items.append(contentsOf: titles)
+    }
+}
+
+private struct CollectionSegmentStyle: ButtonStyle {
+    let selected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        Focused { focused in
+            configuration.label
+                .foregroundStyle(selected ? Color.black : focused ? Color.white : Theme.gray300)
+                .background(selected ? Color.white : focused ? Color.white.opacity(0.2) : .clear, in: Capsule())
+                .opacity(configuration.isPressed ? 0.8 : 1)
         }
     }
 }

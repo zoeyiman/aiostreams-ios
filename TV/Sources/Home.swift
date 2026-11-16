@@ -368,7 +368,6 @@ struct HeroCarousel: View {
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             backdrop
-            shade
             details
                 .id(item.id)
                 .transition(.opacity)
@@ -418,16 +417,21 @@ struct HeroCarousel: View {
             .focused($focus, equals: action)
     }
 
-    /// Keep the entire backdrop in frame and hold its picture until the next one loads.
+    /// The large image runs behind the rail while the controls stay within the page.
     private var backdrop: some View {
-        HeroArtwork(url: session.client?.backdrop(item, height: 1080))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var shade: some View {
-        ZStack {
-            LinearGradient(colors: [.black.opacity(0.78), .clear], startPoint: .leading, endPoint: .trailing)
-            LinearGradient(colors: [.black.opacity(0.85), .clear], startPoint: .bottom, endPoint: .center)
+        GeometryReader { geometry in
+            let inset = Theme.railInset
+            HeroArtwork(url: session.client?.backdrop(item, height: 1080))
+                .overlay {
+                    ZStack {
+                        LinearGradient(colors: [.black.opacity(0.75), .clear],
+                                       startPoint: .leading, endPoint: .trailing)
+                        LinearGradient(colors: [Theme.background, .black.opacity(0.08), .clear],
+                                       startPoint: .bottom, endPoint: .center)
+                    }
+                }
+                .frame(width: geometry.size.width + inset, height: geometry.size.height)
+                .offset(x: -inset)
         }
         .allowsHitTesting(false)
     }
@@ -538,14 +542,13 @@ private struct HeroArtwork: View {
             .overlay {
                 GeometryReader { geometry in
                     if let image {
-                        ZStack {
-                            Image(uiImage: image).resizable().scaledToFill()
-                                .frame(width: geometry.size.width, height: geometry.size.height)
-                                .blur(radius: Theme.px(32), opaque: true)
-                                .opacity(0.55)
-                            Image(uiImage: image).resizable().scaledToFit()
-                                .frame(width: geometry.size.width, height: geometry.size.height)
-                        }
+                        Color.clear
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .overlay(alignment: .top) {
+                                Image(uiImage: image).resizable().scaledToFit()
+                                    .frame(width: geometry.size.width,
+                                           height: geometry.size.width * image.size.height / max(1, image.size.width))
+                            }
                         .clipped()
                     }
                 }

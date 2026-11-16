@@ -70,6 +70,7 @@ struct MainView: View {
     @State private var exitHint: Task<Void, Never>?
 
     private var open: Bool { railFocus != nil }
+    private var onHome: Bool { place == .home && (paths[.home]?.isEmpty ?? true) }
 
     /// Where the shade stops being solid: past the open rail's widest name.
     private static let solidShade = Theme.px(12 + 232 + 32)
@@ -113,7 +114,7 @@ struct MainView: View {
             // The rail's own column, which rows scrolled under it disappear beneath. Over the
             // artwork there's none, as in the web app: the icons sit on the art, and the page
             // fades out before reaching them instead (pageEdge).
-            if !top && !prefs.flag("artBackground", false) {
+            if !top && !onHome && !prefs.flag("artBackground", false) {
                 Theme.background
                     .frame(width: Theme.px(80))
                     .ignoresSafeArea()
@@ -203,7 +204,7 @@ struct MainView: View {
     /// Over the artwork, the page fades out across the rail's edge, so rows scrolled left dissolve
     /// before the icons rather than passing under them; elsewhere the rail's column covers them.
     @ViewBuilder private var pageEdge: some View {
-        if prefs.flag("artBackground", false) && !top {
+        if prefs.flag("artBackground", false) && !top && !onHome {
             HStack(spacing: 0) {
                 Color.clear.frame(width: Theme.px(40))
                 LinearGradient(colors: [.clear, .black], startPoint: .start, endPoint: .end)

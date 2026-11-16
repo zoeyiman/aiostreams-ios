@@ -1,4 +1,5 @@
-import AVFoundation
+import AetherEngineFeatures
+import Combine
 import SwiftUI
 
 // Live TV, after the web app's (app/live-tv, features/live-tv/live-tv.ts): the server's channels by
@@ -40,6 +41,7 @@ struct LiveTVView: View {
     @State private var now = Date()
     @State private var choice: VersionChoice?
     @State private var selectedID: String?
+    @FocusState private var focusedChannel: String?
     @State private var fullScreenPlayer = false
     @State private var favourites: [String: Bool] = [:]
     @State private var pendingFavourite: String?
@@ -82,6 +84,9 @@ struct LiveTVView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .edgeToEdge()
         .playFlow($choice, playerVisibility: { fullScreenPlayer = $0 }) { resumeBrowser() }
+        .onChange(of: focusedChannel) { _, id in
+            if let id, channels.contains(where: { $0.id == id }) { selectedID = id }
+        }
         .task { await loadGroups() }
         .task(id: group) { await reload() }
         .task(id: window.start) { await refreshSchedules() }
@@ -100,9 +105,9 @@ struct LiveTVView: View {
                     LazyVStack(spacing: Theme.px(5)) {
                         ForEach(channels) { channel in
                             ChannelRow(channel: channel, slots: slots(channel), now: now, selected: channel.id == selected.id) {
-                                if channel.id == selected.id { play(channel) }
-                                else { selectedID = channel.id }
+                                play(channel)
                             }
+                            .focused($focusedChannel, equals: channel.id)
                             .accessibilityAddTraits(channel.id == selected.id ? .isSelected : [])
                             .onAppear { if channel.id == channels.last?.id { Task { await more() } } }
                         }
@@ -127,9 +132,14 @@ struct LiveTVView: View {
         let slot = slots(channel).now
         let favourite = favourites[channel.id] ?? (channel.userData?.isFavorite == true)
         return VStack(alignment: .leading, spacing: Theme.px(9)) {
-            ChannelPreview(channel: channel, enabled: !fullScreenPlayer)
-                .frame(width: previewWidth, height: previewWidth * 9 / 16)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.px(12)))
+            ZStack {
+                ChannelLogo(channel: channel)
+                if !fullScreenPlayer {
+                    ChannelPreview(channel: channel).id(channel.id)
+                }
+            }
+            .frame(width: previewWidth, height: previewWidth * 9 / 16)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.px(12)))
             Text([channel.channelNumber, channel.name].compactMap { $0 }.joined(separator: " · "))
                 .font(Theme.font(Theme.sm, .semibold)).foregroundStyle(Theme.gray400)
             Text(slot?.name ?? channel.name ?? L("Live"))
@@ -482,53 +492,67 @@ private struct ChannelProgress: View {
 private struct ChannelPreview: View {
     @EnvironmentObject private var session: Session
     let channel: Item
-    let enabled: Bool
-    @State private var player: AVPlayer?
-    @State private var visibleFrame = false
+    @State private var engine: AetherEngine?
+    @State private var ready = false
 
     var body: some View {
-        ZStack {
-            ChannelLogo(channel: channel)
-            if let player {
-                TrailerLayer(player: player, gravity: .resizeAspect)
-                    .opacity(visibleFrame ? 1 : 0)
+        Color.clear
+            .overlay {
+                if let engine {
+                    ChannelPreviewSurface(engine: engine)
+                        .opacity(ready ? 1 : 0)
+                        .onReceive(engine.$hasFirstFrameReadyForDisplay) { ready = $0 }
+                }
             }
-        }
-        .accessibilityHidden(true)
-        .task(id: enabled ? channel.id : nil) { await preview() }
-        .onDisappear {
-            player?.pause()
-            player = nil
-            visibleFrame = false
-        }
+            .accessibilityHidden(true)
+            .task { await preview() }
+            .onDisappear {
+                engine?.stop()
+                engine = nil
+                ready = false
+            }
     }
 
     private func preview() async {
-        player?.pause()
-        player = nil
-        visibleFrame = false
-        guard enabled else { return }
-        try? await Task.sleep(for: .milliseconds(350))
+        try? await Task.sleep(for: .milliseconds(450))
         guard !Task.isCancelled, let client = session.client, let userID = session.userId,
               let info = try? await client.playbackInfo(userId: userID, itemId: channel.id),
-              let source = info.mediaSources?.first(where: { $0.requiredHttpHeaders?.isEmpty != false }),
-              let url = client.streamURL(itemId: channel.id, source: source),
-              !Task.isCancelled else { return }
-
-        let preview = AVPlayer(url: url)
-        preview.isMuted = true
-        player = preview
-        preview.play()
-        for _ in 0..<60 {
-            guard !Task.isCancelled, preview.currentItem?.status != .failed else { break }
-            if preview.timeControlStatus == .playing {
-                visibleFrame = true
-                return
+              let first = info.mediaSources?.first else { return }
+        let named = try? await client.playbackInfo(userId: userID, itemId: channel.id, sourceId: first.ownId)
+        let source = named?.mediaSources?.first(where: { $0.ownId == first.ownId }) ?? first
+        guard !Task.isCancelled, let url = client.streamURL(itemId: channel.id, source: source),
+              let preview = try? AetherEngine() else { return }
+        preview.volume = 0
+        engine = preview
+        var options = LoadOptions()
+        options.isLive = true
+        options.matchContentEnabled = false
+        options.displayCriteriaOwner = .host
+        options.httpHeaders = source.requiredHttpHeaders ?? [:]
+        do {
+            try await preview.load(url: url, startPosition: nil, options: options, audioSourceStreamIndex: nil)
+            guard !Task.isCancelled else { preview.stop(); return }
+            preview.play()
+        } catch {
+            preview.stop()
+            if !Task.isCancelled {
+                engine = nil
+                ready = false
             }
-            try? await Task.sleep(for: .milliseconds(150))
         }
-        preview.pause()
     }
+}
+
+private struct ChannelPreviewSurface: UIViewRepresentable {
+    let engine: AetherEngine
+
+    func makeUIView(context: Context) -> AetherPlayerView {
+        let view = AetherPlayerView()
+        engine.bind(view: view)
+        return view
+    }
+
+    func updateUIView(_ view: AetherPlayerView, context: Context) {}
 }
 
 // MARK: - Guide

@@ -172,7 +172,7 @@ enum UnattendedPlays {
 }
 
 private enum PlayerFocus: Hashable {
-    case surface, bar, play, back, forward, tracks, audio, chapters, speed, fit, skip, next, keepWatching, stop, sync, episodes, stats, pip
+    case surface, bar, play, back, forward, tracks, audio, chapters, speed, fit, skip, next, nextEpisode, keepWatching, stop, sync, episodes, stats, pip
 }
 
 private enum PlayerPanel: Hashable {
@@ -528,17 +528,18 @@ private struct PlayerChrome: View {
     private var pauseInfo: some View {
         let item = model.request.item
         return VStack(alignment: .leading, spacing: Theme.px(5)) {
-            TitleLogo(item: item, maxHeight: Theme.px(48), maxWidth: Theme.px(420), titleSize: Theme.xl)
+            Text(item.isEpisode ? (item.seriesName ?? item.name ?? "") : (item.name ?? ""))
+                .font(Theme.font(17, .semibold))
+                .lineLimit(1)
             if item.isEpisode {
-                Text(item.displayTitle).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray200).lineLimit(1)
+                Text(item.displayTitle).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray300).lineLimit(1)
             }
             if let overview = model.overview, !overview.isEmpty {
-                Text(overview).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray200).lineLimit(3)
+                Text(overview).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray200).lineLimit(4)
             }
         }
         .frame(maxWidth: Theme.px(650), alignment: .leading)
-        .padding(Theme.px(16))
-        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: Theme.px(12)))
+        .shadow(color: .black.opacity(0.85), radius: Theme.px(4))
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, Theme.px(24))
         .padding(.bottom, Theme.px(18))
@@ -601,6 +602,12 @@ private struct PlayerChrome: View {
                     .padding(.leading, Theme.px(12))
                 }
                 Spacer()
+                if model.nextEpisode != nil && model.party == nil {
+                    Button { playOn(auto: false) } label: { Image(systemName: "forward.end.fill") }
+                        .buttonStyle(ControlIconStyle())
+                        .accessibilityLabel(model.request.item.isEpisode ? L("Next episode") : L("Play next"))
+                        .focused($focus, equals: .nextEpisode)
+                }
                 if model.request.item.isEpisode {
                     Button { open(.episodes) } label: { Image(systemName: "list.and.film") }
                         .buttonStyle(ControlIconStyle())

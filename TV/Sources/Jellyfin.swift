@@ -372,10 +372,15 @@ struct ServerExtension: Decodable {
 }
 
 struct PublicUser: Decodable, Identifiable, Hashable {
+    struct Policy: Decodable, Hashable {
+        var isHidden: Bool?
+    }
+
     var id: String
     var name: String?
     var hasPassword: Bool?
     var primaryImageTag: String?
+    var policy: Policy?
 }
 
 struct AuthResult: Decodable {

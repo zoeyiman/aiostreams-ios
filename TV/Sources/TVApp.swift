@@ -175,6 +175,7 @@ struct SignInView: View {
     @State private var quickConnectEnabled = false
     @State private var code: String?
     @State private var name = ""
+    @State private var accountIdentifier = ""
     @State private var password = ""
     @State private var working = false
     @State private var error: String?
@@ -246,7 +247,11 @@ struct SignInView: View {
                     if session.asking && user.id == session.userId { session.carryOn(); return }
                     name = user.name ?? ""
                     password = ""
-                    if user.hasPassword == false { signIn() } else { mode = .password(user) }
+                    if user.hasPassword == false && !requiresAccountIdentifier {
+                        signIn()
+                    } else {
+                        mode = .password(user)
+                    }
                 } label: {
                     UserAvatar(user: user, url: avatarURL(user))
                 }
@@ -255,6 +260,10 @@ struct SignInView: View {
             }
         }
         .padding(Theme.px(10))
+    }
+
+    private var requiresAccountIdentifier: Bool {
+        !session.isStock && session.client?.base.path.lowercased() == "/jellyfin"
     }
 
     private func passwordForm(_ user: PublicUser) -> some View {
@@ -266,6 +275,12 @@ struct SignInView: View {
             Text(L("If the user has a PIN, add it after the password with a /, like password/1234."))
                 .font(Theme.font(Theme.sm))
                 .foregroundStyle(Theme.gray400)
+            if requiresAccountIdentifier {
+                TextField(L("Configuration UUID or alias"), text: $accountIdentifier)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .frame(maxWidth: Theme.px(440))
+            }
             SecureField(L("Password"), text: $password)
                 .font(Theme.font(Theme.base))
                 .frame(maxWidth: Theme.px(440))
@@ -273,7 +288,7 @@ struct SignInView: View {
             HStack(spacing: Theme.px(12)) {
                 Button(working ? L("Signing in…") : L("Sign in"), action: signIn)
                     .buttonStyle(PrimaryPillStyle())
-                    .disabled(working)
+                    .disabled(working || (requiresAccountIdentifier && accountIdentifier.trimmingCharacters(in: .whitespaces).isEmpty))
                 Button(L("Back")) { mode = .pick }.buttonStyle(SecondaryPillStyle())
             }
         }
@@ -331,10 +346,25 @@ struct SignInView: View {
 
     private func load() async {
         guard let client = session.client else { return }
-        // A picker address lists its users, as a Jellyfin server does.
-        users = (try? await client.get("/Users/Public") as [PublicUser]) ?? []
-        quickConnectEnabled = (try? await client.get("/QuickConnect/Enabled") as Bool) ?? false
+        var publicClient = client
+        publicClient.token = nil
+        async let publicUsers: [PublicUser]? = try? publicClient.get("/Users/Public")
+        async let serverUsers: [PublicUser]? = session.asking && client.token != nil
+            ? try? client.get("/Users") : nil
+        async let quickConnect: Bool? = try? publicClient.get("/QuickConnect/Enabled")
+        let (listed, authenticated, quick) = await (publicUsers, serverUsers, quickConnect)
+        guard !Task.isCancelled else { return }
+        var seen = Set<String>()
+        let visibleUsers = (authenticated ?? []).filter {
+            $0.policy?.isHidden != true || $0.id == session.userId
+        }
+        users = (visibleUsers + (listed ?? [])).filter { seen.insert($0.id).inserted }
+        quickConnectEnabled = quick ?? false
         loaded = true
+        if session.asking && users.isEmpty, let id = session.userId, let name = session.userName {
+            users = [PublicUser(id: id, name: name)]
+            error = L("The server did not return any other profiles.")
+        }
         if users.isEmpty && !session.asking { mode = quickConnectEnabled ? .quickConnect : .manual }
     }
 
@@ -373,13 +403,19 @@ struct SignInView: View {
 
     private func signIn() {
         guard let client = session.client, !working, !name.isEmpty else { return }
+        let account = accountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pickedUser: Bool
+        if case .password = mode { pickedUser = true } else { pickedUser = false }
+        guard !pickedUser || !requiresAccountIdentifier || !account.isEmpty else { return }
+        let username = pickedUser && requiresAccountIdentifier ? "\(account)/\(name)" : name
         working = true
         error = nil
         Task {
+            defer { working = false }
             do {
                 let result: AuthResult = try await client.post(
                     "/Users/AuthenticateByName",
-                    body: ["Username": name, "Pw": password]
+                    body: ["Username": username, "Pw": password]
                 )
                 guard session.client?.base == client.base, session.stage != .signedIn || session.asking else { return }
                 poll?.cancel()
@@ -389,7 +425,6 @@ struct SignInView: View {
             } catch {
                 self.error = error.localizedDescription
             }
-            working = false
         }
     }
 }
