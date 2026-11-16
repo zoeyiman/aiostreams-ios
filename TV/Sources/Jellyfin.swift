@@ -8,6 +8,7 @@ struct UserData: Decodable, Hashable {
     var playedPercentage: Double?
     var played: Bool?
     var isFavorite: Bool?
+    var likes: Bool?
     var unplayedItemCount: Int?
     var lastPlayedDate: String?
 }

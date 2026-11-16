@@ -408,8 +408,8 @@ struct HeroCarousel: View {
                         }
                     }
                 }
-                .frame(width: geometry.size.width + inset, height: geometry.size.height)
-                .offset(x: -inset)
+                .frame(width: geometry.size.width + inset, height: max(1, geometry.size.height - Theme.topBarInset))
+                .offset(x: -inset, y: Theme.topBarInset)
         }
         .allowsHitTesting(false)
     }
@@ -524,8 +524,7 @@ private struct HeroArtwork: View {
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .overlay(alignment: .top) {
                                 Image(uiImage: image).resizable().scaledToFit()
-                                    .frame(width: geometry.size.width,
-                                           height: geometry.size.width * image.size.height / max(1, image.size.width))
+                                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
                             }
                         .clipped()
                     }
@@ -594,6 +593,7 @@ struct WideRow: View {
                     RowBrowseArrow(title: title, route: browseRoute)
                 }
                 .pagePadding()
+                .focusSection()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                         ForEach(items) { item in

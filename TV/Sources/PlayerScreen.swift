@@ -21,11 +21,13 @@ struct PlayerScreen: View {
     @State private var finding: Item?
     @State private var changingChannel = false
     @State private var switchingEpisode: Item?
+    @State private var recentLive: [Item] = []
 
     var body: some View {
         Group {
             if let model {
-                PlayerChrome(model: model, close: finish, playNext: { next in Task { await playOn(next) } }, finding: finding,
+                PlayerChrome(model: model, close: finish, playNext: { next in Task { await playOn(next, showArtwork: next.isEpisode) } }, finding: finding,
+                             recentLive: recentLive, tuneRecent: { channel in Task { await playChannel(channel) } },
                              pickEpisode: { next in Task { await playOn(next, showArtwork: true) } },
                              leave: close, changeChannel: { step in Task { await changeChannel(step) } },
                              chooseAnotherVersion: {
@@ -44,6 +46,7 @@ struct PlayerScreen: View {
                         let item = model.request.item
                         if let channelID = item.isChannel ? item.id : item.channelId {
                             RecentChannels.note(channelID, for: session.profileID)
+                            if item.isChannel { Task { await loadRecentLive() } }
                         }
                     }
             } else {
@@ -152,6 +155,17 @@ struct PlayerScreen: View {
         await start(PlayRequest(item: next, source: chosen, playSessionId: playSession, startMs: startMs, queue: rest))
     }
 
+    private func loadRecentLive() async {
+        guard let client = session.client, let userId = session.userId else { return }
+        let ids = Array(RecentChannels.ids(for: session.profileID).prefix(8))
+        guard !ids.isEmpty else { recentLive = []; return }
+        let result: ItemsResult? = try? await client.get("/Items", [
+            "userId": userId, "Ids": ids.joined(separator: ","),
+        ])
+        let items = Dictionary((result?.items ?? []).filter(\.isChannel).map { ($0.id, $0) }) { first, _ in first }
+        recentLive = ids.compactMap { items[$0] }
+    }
+
     private func finish() {
         // Leaving a watch party's title sits it out, staying in the party.
         if let entry = model?.request.partyEntry { PartyFollow.shared.leftPlayer(entry) }
@@ -174,6 +188,12 @@ struct PlayerScreen: View {
         }
         guard let index = channels.firstIndex(where: { $0.id == current.request.item.id }), channels.count > 1 else { return }
         let next = channels[(index + step + channels.count) % channels.count]
+        await playChannel(next, lineup: channels)
+    }
+
+    private func playChannel(_ next: Item, lineup: [Item]? = nil) async {
+        guard let current = model, current.request.item.id != next.id, finding == nil,
+              let client = session.client, let userId = session.userId else { return }
         finding = next
         defer { finding = nil }
         guard let info = try? await client.playbackInfo(userId: userId, itemId: next.id),
@@ -187,7 +207,7 @@ struct PlayerScreen: View {
         }
         current.stop()
         await start(PlayRequest(item: next, source: source, playSessionId: playSession, startMs: nil,
-                                channelLineup: channels))
+                                channelLineup: lineup ?? current.request.channelLineup))
     }
 }
 
@@ -210,6 +230,8 @@ private struct PlayerChrome: View {
     let close: () -> Void
     let playNext: (Item) -> Void
     let finding: Item?
+    let recentLive: [Item]
+    let tuneRecent: (Item) -> Void
     let pickEpisode: (Item) -> Void
     /// Closes the player's screen with the video still going, for Picture in Picture.
     var leave: () -> Void = {}
@@ -423,14 +445,16 @@ private struct PlayerChrome: View {
             }
 
             if panel == .episodes {
-                Color.black.opacity(0.62).ignoresSafeArea().allowsHitTesting(false)
+                Color.black.opacity(0.22).ignoresSafeArea().allowsHitTesting(false)
                 EpisodesDrawer(item: model.request.item, close: closePanel) { episode in
                     closePanel()
                     input()
                     pickEpisode(episode)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                .transition(.move(edge: .trailing))
+                .padding(.trailing, Theme.px(42))
+                .padding(.bottom, Theme.px(108))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottomTrailing)))
             }
 
             if panel == nil && model.failure == nil {
@@ -615,6 +639,21 @@ private struct PlayerChrome: View {
                         transportButtons.fixedSize(horizontal: true, vertical: false).focusSection()
                     }
                     Capsule().fill(.white.opacity(0.22)).frame(height: Theme.px(3))
+                    if !recentLive.isEmpty {
+                        VStack(alignment: .leading, spacing: Theme.px(7)) {
+                            Text(L("Recently watched")).font(Theme.font(Theme.sm, .semibold))
+                            ScrollView(.horizontal) {
+                                HStack(spacing: Theme.px(8)) {
+                                    ForEach(recentLive) { channel in
+                                        Button(channel.name ?? L("Channel")) { tuneRecent(channel) }
+                                            .buttonStyle(SoftPillStyle(selected: channel.id == model.request.item.id))
+                                    }
+                                }
+                                .padding(.vertical, Theme.px(4))
+                            }
+                        }
+                        .focusSection()
+                    }
                 } else {
                     timeline
                     transportButtons.focusSection()
@@ -1068,7 +1107,7 @@ private struct ProgressTrack: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(.white.opacity(0.2))
                 Capsule().fill(.white.opacity(0.35)).frame(width: share(model.buffered))
-                Capsule().fill(Theme.ring).frame(width: share(model.scrubTarget ?? model.position))
+                Capsule().fill(.white).frame(width: share(model.scrubTarget ?? model.position))
                 ForEach(model.chapters.dropFirst(), id: \.id) { chapter in
                     Rectangle()
                         .fill(Color.black)
@@ -1119,7 +1158,7 @@ private struct ControlIconStyle: ButtonStyle {
                 .frame(width: Theme.px(38), height: Theme.px(38))
                 .background(Circle().fill(focused || primary ? Color.white : flat ? Color.clear : Color.black.opacity(0.42)))
                 .overlay(Circle().strokeBorder(.white.opacity(focused || primary || flat ? 0 : 0.13), lineWidth: Theme.px(1)))
-                .focusRing(flat && focused && primary)
+                .brightness(focused && primary ? -0.15 : 0)
                 .scaleEffect(focused ? 1.07 : 1)
                 .opacity(configuration.isPressed ? 0.8 : 1)
         }
@@ -1532,9 +1571,9 @@ private struct EpisodesDrawer: View {
             episodeList
         }
         .padding(.vertical, Theme.px(23))
-        .frame(width: Theme.px(410))
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(Color(white: 0.055))
+        .frame(width: Theme.px(410), height: Theme.px(412), alignment: .top)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.px(20)))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.px(20)))
         .focusSection()
         .task { await loadSeasons() }
         .task(id: seasonID) { await loadEpisodes(seasonID) }
@@ -1606,7 +1645,7 @@ private struct EpisodesDrawer: View {
             VStack(alignment: .leading, spacing: Theme.px(4)) {
                 Text(title).font(Theme.font(Theme.sm, .semibold)).lineLimit(2)
                 Text(playing ? L("Playing") : [date, duration].compactMap { $0 }.joined(separator: " · "))
-                    .font(Theme.font(Theme.xs)).foregroundStyle(playing ? Color.white : Theme.gray300)
+                    .font(Theme.font(Theme.xs)).opacity(playing ? 1 : 0.72)
                     .lineLimit(1)
             }
         }
@@ -1640,8 +1679,9 @@ private struct EpisodeDrawerRowStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         Focused { focused in
             configuration.label
-                .background(.white.opacity(focused ? 0.18 : playing ? 0.10 : 0), in: RoundedRectangle(cornerRadius: Theme.px(10)))
-                .focusRing(focused)
+                .foregroundStyle(focused ? Color.black : Color.white)
+                .background(Color.white.opacity(focused ? 0.94 : playing ? 0.15 : 0),
+                            in: RoundedRectangle(cornerRadius: Theme.px(8)))
                 .opacity(configuration.isPressed ? 0.8 : 1)
         }
     }

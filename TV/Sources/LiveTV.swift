@@ -62,35 +62,18 @@ struct LiveTVView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.px(12)) {
             header.zIndex(1)
-            controls.zIndex(1)
-            if choosingGroup {
-                groupPicker
-            } else if showsGuide {
-                GuideView(channels: channels, schedules: schedules, window: window, now: now, play: play,
-                          playFromStart: { programme in
-                              choice = VersionChoice(item: programme, startMs: 0, mode: .straight)
-                          },
-                          more: { Task { await more() } })
-                    .id(group)
-            } else if !loaded {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if channels.isEmpty {
-                Text(L("No channels in this group."))
-                    .font(Theme.font(Theme.base))
-                    .foregroundStyle(Theme.gray400)
-                    .pagePadding()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .focusable()
-            } else if let selected {
-                channelBrowser(selected)
+            if providerGroups.isEmpty { controls.zIndex(1) }
+            HStack(alignment: .top, spacing: Theme.px(14)) {
+                if !providerGroups.isEmpty { groupsRail.padding(.leading, pageInset) }
+                browserContent
             }
         }
         .padding(.bottom, Theme.px(20))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .edgeToEdge()
         .playFlow($choice, playerVisibility: { fullScreenPlayer = $0 }) { resumeBrowser() }
-        .onChange(of: focusedChannel) { previous, current in
-            if previous != nil, let current, current != selectedID { tune(current) }
+        .onChange(of: focusedChannel) { _, current in
+            if let current, current != selectedID { tune(current) }
         }
         .task { await loadGroups() }
         .task(id: group) { await reload() }
@@ -103,14 +86,35 @@ struct LiveTVView: View {
         }
     }
 
+    @ViewBuilder private var browserContent: some View {
+        if choosingGroup {
+            groupPicker
+        } else if showsGuide {
+            GuideView(channels: channels, schedules: schedules, window: window, now: now, play: play,
+                      playFromStart: { programme in
+                          choice = VersionChoice(item: programme, startMs: 0, mode: .straight)
+                      }, more: { Task { await more() } })
+                .id(group)
+        } else if !loaded {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let selected {
+            channelBrowser(selected)
+        } else {
+            Text(L("No channels in this group."))
+                .foregroundStyle(Theme.gray400)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .focusable()
+        }
+    }
+
     private func channelBrowser(_ selected: Item) -> some View {
         GeometryReader { geometry in
-            HStack(alignment: .top, spacing: Theme.px(28)) {
+            HStack(alignment: .top, spacing: Theme.px(22)) {
                 ScrollView {
                     LazyVStack(spacing: Theme.px(5)) {
                         ForEach(channels) { channel in
                             ChannelRow(channel: channel, slots: slots(channel), now: now, selected: channel.id == selected.id) {
-                                tune(channel.id)
+                                play(channel)
                             }
                             .focused($focusedChannel, equals: channel.id)
                             .accessibilityAddTraits(channel.id == selected.id ? .isSelected : [])
@@ -120,11 +124,11 @@ struct LiveTVView: View {
                     .padding(Theme.px(6))
                 }
                 .scrollClipDisabled(false)
-                .frame(width: geometry.size.width * 0.43)
+                .frame(width: geometry.size.width * 0.39)
                 .clipped()
                 .focusSection()
                 ScrollView {
-                    channelDetail(selected, previewWidth: min(geometry.size.width * 0.40, geometry.size.height * 0.96))
+                    channelDetail(selected, previewWidth: min(max(1, geometry.size.width * 0.61 - Theme.px(22)), geometry.size.height * 16 / 9))
                 }
                 .scrollClipDisabled(false)
                 .clipped()
@@ -268,6 +272,29 @@ struct LiveTVView: View {
         .scrollClipDisabled(false)
         .fixedSize(horizontal: false, vertical: true)
         .pagePadding()
+        .focusSection()
+    }
+
+    private var groupsRail: some View {
+        VStack(alignment: .leading, spacing: Theme.px(8)) {
+            Text(L("Groups")).font(Theme.font(Theme.sm, .semibold))
+                .padding(.leading, Theme.px(8))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Theme.px(4)) {
+                    ForEach(groups) { entry in
+                        Button { choose(entry.id) } label: {
+                            Text(entry.name)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, Theme.px(9))
+                                .padding(.vertical, Theme.px(8))
+                        }
+                        .buttonStyle(SoftPillStyle(selected: entry.id == group))
+                    }
+                }
+            }
+        }
+        .frame(width: Theme.px(174), alignment: .leading)
         .focusSection()
     }
 
@@ -626,6 +653,7 @@ private struct ChannelPreview: View {
             return
         }
         preview.volume = 0
+        preview.videoGravity = .resizeAspect
         engine = preview
         var options = LoadOptions()
         options.isLive = true

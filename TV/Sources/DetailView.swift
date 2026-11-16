@@ -5,6 +5,7 @@ import SwiftUI
 // seasons as pills over a row of episodes, the cast, and titles like it.
 
 struct DetailView: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var prefs: Preferences
     let item: Item
@@ -47,6 +48,18 @@ struct DetailView: View {
             }
             .edgeToEdge()
         }
+        .overlay(alignment: .topLeading) {
+            Button { dismiss() } label: {
+                Image(systemName: "chevron.backward")
+                    .font(Theme.font(Theme.sm, .semibold))
+                    .frame(width: Theme.px(38), height: Theme.px(36))
+            }
+            .buttonStyle(RowBrowseArrowStyle())
+            .accessibilityLabel(L("Back"))
+            .padding(.leading, pageInset)
+            .padding(.top, pageTop)
+        }
+        .onExitCommand { dismiss() }
         .task { await load() }
         // Find versions when a title opens: what Play would play, looked for straight away.
         .task(id: target?.id) {
@@ -177,6 +190,12 @@ struct DetailView: View {
                     .buttonStyle(CircleIconStyle())
                 }
             }
+            if shown.isSeries && !session.isStock {
+                Button(shown.userData?.likes == false ? L("Undrop show") : L("Drop show")) {
+                    Task { await setDropped(shown.userData?.likes != false) }
+                }
+                .buttonStyle(SoftPillStyle())
+            }
             if shown.isSeries {
                 Button { pickingEpisode = true } label: { Image(systemName: "shuffle") }
                     .buttonStyle(CircleIconStyle())
@@ -252,7 +271,7 @@ struct DetailView: View {
         let cast = Array((shown.people ?? []).filter { $0.type == "Actor" || $0.type == nil }.prefix(30))
         if !cast.isEmpty {
             VStack(alignment: .leading, spacing: Theme.px(16)) {
-                Text(L("Cast")).font(Theme.font(Theme.xl, .semibold))
+                Text(L("Cast")).font(Theme.font(Theme.xl, .semibold)).pagePadding()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                         ForEach(cast) { person in
@@ -269,8 +288,8 @@ struct DetailView: View {
     }
 
     private func personImage(_ person: Person) -> URL? {
-        guard let client = session.client, let tag = person.primaryImageTag else { return nil }
-        return client.image(person.id, .primary, tag: tag, height: 192)
+        guard let client = session.client else { return nil }
+        return client.image(person.id, .primary, tag: person.primaryImageTag, height: 192)
     }
 
     // MARK: Trailer
@@ -346,6 +365,17 @@ struct DetailView: View {
             "Fields": "Overview",
         ])
         episodes = list?.items ?? []
+    }
+
+    private func setDropped(_ dropped: Bool) async {
+        guard let client = session.client, let userId = session.userId else { return }
+        do {
+            try await client.call("POST", "/UserItems/\(shown.id)/Rating",
+                                  ["userId": userId, "Likes": dropped ? "false" : "true"])
+            NotificationCenter.default.post(name: .watchStateChanged, object: nil)
+        } catch {
+            AppLog.warn("details", error.localizedDescription)
+        }
     }
 
     private func setPlayed(_ played: Bool) async {
@@ -602,12 +632,8 @@ struct CircleCardStyle: ButtonStyle {
         let label: Label
 
         var body: some View {
-            label.overlay {
-                if focused {
-                    Circle().stroke(Theme.ring, lineWidth: Theme.ringWidth)
-                        .padding(-(Theme.ringOffset + Theme.ringWidth / 2))
-                }
-            }
+            label.brightness(focused ? 0.10 : 0)
+                .scaleEffect(focused ? 1.035 : 1)
         }
     }
 }

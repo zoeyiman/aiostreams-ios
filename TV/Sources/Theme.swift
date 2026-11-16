@@ -95,19 +95,7 @@ struct FocusRing: ViewModifier {
     var radius: CGFloat? = nil
 
     func body(content: Content) -> some View {
-        content.overlay {
-            if focused {
-                Group {
-                    if let radius {
-                        RoundedRectangle(cornerRadius: radius + Theme.ringOffset, style: .continuous)
-                            .stroke(Theme.ring, lineWidth: Theme.ringWidth)
-                    } else {
-                        Capsule().stroke(Theme.ring, lineWidth: Theme.ringWidth)
-                    }
-                }
-                .padding(-(Theme.ringOffset + Theme.ringWidth / 2))
-            }
-        }
+        content.brightness(focused ? 0.09 : 0)
     }
 }
 
@@ -193,7 +181,8 @@ struct CardStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         Focused { focused in
             configuration.label
-                .focusRing(focused, radius: radius)
+                .brightness(focused ? 0.10 : 0)
+                .scaleEffect(focused ? 1.025 : 1)
                 .opacity(configuration.isPressed ? 0.85 : 1)
         }
     }

@@ -43,11 +43,11 @@ private struct RowResultsView: View {
         VStack(alignment: .leading, spacing: Theme.px(10)) {
             HStack(spacing: Theme.px(14)) {
                 Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                        .font(Theme.font(Theme.base, .semibold))
-                        .frame(width: Theme.px(28), height: Theme.px(28))
+                    Image(systemName: "chevron.backward")
+                        .font(Theme.font(Theme.sm, .semibold))
+                        .frame(width: Theme.px(36), height: Theme.px(32))
                 }
-                .buttonStyle(SoftPillStyle())
+                .buttonStyle(RowBrowseArrowStyle())
                 .accessibilityLabel(L("Back"))
                 Text(title).font(Theme.font(Theme.xl3, .bold))
             }
@@ -55,7 +55,7 @@ private struct RowResultsView: View {
             .padding(.top, pageTop)
             .focusSection()
             ScrollView {
-                PosterGrid(items: items, wide: wide)
+                PosterGrid(items: items, wide: wide, compact: true, episodeDetails: wide)
                     .padding(.bottom, pageMargin)
             }
             .edgeToEdge()
@@ -218,6 +218,7 @@ struct ItemRow: View {
                     RowBrowseArrow(title: row.title, route: browseRoute)
                 }
                 .pagePadding()
+                .focusSection()
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                         ForEach(cards) { item in
@@ -264,14 +265,14 @@ struct RowBrowseArrow: View {
         NavigationLink(value: route) {
             Image(systemName: "chevron.forward")
                 .font(Theme.font(Theme.sm, .semibold))
-                .frame(width: Theme.px(24), height: Theme.px(28))
+                .frame(width: Theme.px(38), height: Theme.px(36))
         }
         .buttonStyle(RowBrowseArrowStyle())
         .accessibilityLabel(L("See all: %@", title))
     }
 }
 
-private struct RowBrowseArrowStyle: ButtonStyle {
+struct RowBrowseArrowStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         Focused { focused in
             configuration.label
@@ -307,6 +308,7 @@ struct PosterLink: View {
     var showsTitle = false
     var portrait = false
     var gridWidth: CGFloat?
+    var showsEpisodeProgress = false
     var previewViewport: Namespace.ID?
     var revealPreview: ((CGRect) -> Bool)?
     @State private var opened = false
@@ -412,14 +414,16 @@ struct PosterLink: View {
             }
             .itemMenu(item)
             // What the web app's Poster text asks for: the title, the year, both or neither.
-            let lines = showsTitle ? ["title"] : stillWide ? ["title", "year"] : prefs.posterLines
+            let lines = showsEpisodeProgress ? ["title", "year"] : showsTitle ? ["title"] : stillWide ? ["title", "year"] : prefs.posterLines
             VStack(alignment: .leading, spacing: Theme.px(2)) {
                 if lines.contains("title") {
                     Text(item.isEpisode ? (item.seriesName ?? item.displayTitle) : (item.name ?? ""))
                         .font(Theme.font(Theme.sm, .medium))
                         .lineLimit(1)
                 }
-                let second = item.isEpisode ? item.displayTitle : item.productionYear.map(String.init)
+                let second = showsEpisodeProgress && item.isEpisode
+                    ? [item.displayTitle, item.timeLeft].compactMap { $0 }.joined(separator: " · ")
+                    : item.isEpisode ? item.displayTitle : item.productionYear.map(String.init)
                 if lines.contains("year"), let second {
                     Text(second)
                         .font(Theme.font(Theme.xs))
@@ -528,9 +532,14 @@ struct PosterGrid: View {
     let items: [Item]
     var onLast: (() -> Void)? = nil
     var wide = false
+    var compact = false
+    var episodeDetails = false
 
     private let gap = Theme.px(16)
-    private var preferredWidth: CGFloat { wide ? WideCard.size.width : PosterLink.width(prefs.posterSize) }
+    private var preferredWidth: CGFloat {
+        if compact { return wide ? Theme.px(236) : Theme.px(138) }
+        return wide ? WideCard.size.width : PosterLink.width(prefs.posterSize)
+    }
     private var count: Int { max(1, Int((availableWidth + gap) / (preferredWidth + gap))) }
     private var cardWidth: CGFloat {
         guard availableWidth > 0 else { return preferredWidth }
@@ -544,7 +553,8 @@ struct PosterGrid: View {
             spacing: Theme.px(28)
         ) {
             ForEach(items) { item in
-                PosterLink(item: item, wide: wide, showsTitle: wide, portrait: !wide, gridWidth: cardWidth)
+                PosterLink(item: item, wide: wide, showsTitle: wide && !episodeDetails, portrait: !wide, gridWidth: cardWidth,
+                           showsEpisodeProgress: episodeDetails)
                     .onAppear { if item.id == items.last?.id { onLast?() } }
             }
         }
@@ -608,11 +618,11 @@ struct DiscoverView: View {
 
         async let favourites: ItemsResult? = try? client.get("/Items", [
             "userId": userId, "Recursive": "true", "IncludeItemTypes": "Movie,Series,Episode",
-            "Filters": "IsFavorite", "Limit": "24",
+            "Filters": "IsFavorite", "Limit": "24", "Fields": "Genres",
         ])
         async let watched: ItemsResult? = try? client.get("/Items", [
             "userId": userId, "Recursive": "true", "IncludeItemTypes": "Movie,Series,Episode",
-            "Filters": "IsPlayed", "SortBy": "DatePlayed", "SortOrder": "Descending", "Limit": "48",
+            "Filters": "IsPlayed", "SortBy": "DatePlayed", "SortOrder": "Descending", "Limit": "48", "Fields": "Genres",
         ])
         let (favouriteResult, watchedResult) = await (favourites, watched)
         guard !Task.isCancelled else { return }
@@ -628,7 +638,7 @@ struct DiscoverView: View {
             for (index, id) in unique.enumerated() {
                 group.addTask {
                     let result: ItemsResult? = try? await client.get("/Items/\(id)/Similar", [
-                        "userId": userId, "Limit": "16", "EnableUserData": "true",
+                        "userId": userId, "Limit": "16", "EnableUserData": "true", "Fields": "Genres",
                     ])
                     return (index, result)
                 }
@@ -647,10 +657,19 @@ struct DiscoverView: View {
             for list in suggestions where index < list.count {
                 let item = list[index]
                 guard item.type == "Movie" || item.isSeries, item.userData?.played != true,
-                      item.userData?.isFavorite != true, item.resumeMs == nil, seen.insert(item.id).inserted else { continue }
+                      item.userData?.isFavorite != true, item.userData?.likes != false,
+                      item.resumeMs == nil, seen.insert(item.id).inserted else { continue }
                 picks.append(item)
             }
         }
+        let genreWeights = (favouriteItems + watchedItems).flatMap { $0.genres ?? [] }
+            .reduce(into: [String: Int]()) { weights, genre in weights[genre, default: 0] += 1 }
+        func tasteScore(_ item: Item) -> Int {
+            (item.genres ?? []).reduce(0) { $0 + genreWeights[$1, default: 0] }
+        }
+        picks = picks.enumerated().map { (index: $0.offset, item: $0.element, score: tasteScore($0.element)) }
+            .sorted { $0.score == $1.score ? $0.index < $1.index : $0.score > $1.score }
+            .map(\.item)
         movies = picks.filter { $0.type == "Movie" }
         shows = picks.filter(\.isSeries)
         loaded = true
@@ -947,6 +966,8 @@ struct FavouritesView: View {
     @EnvironmentObject private var session: Session
     @State private var items: [Item] = []
     @State private var loaded = false
+    @State private var newestFirst = true
+    @State private var choosingOrder = false
     @State private var media: Media = .all
     @State private var watch: Watch = .all
     @State private var resumingIDs = Set<String>()
@@ -1007,12 +1028,21 @@ struct FavouritesView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.px(10)) {
                 PageTitle(text: L("Favorites"))
-                HStack {
+                HStack(spacing: Theme.px(12)) {
                     segments(Media.allCases, selection: $media, title: { $0.title })
                         .accessibilityLabel(L("Media type"))
                     Spacer(minLength: Theme.px(12))
                     segments(Watch.allCases, selection: $watch, title: { $0.title })
                         .accessibilityLabel(L("Watch status"))
+                    Button { choosingOrder = true } label: {
+                        Label(L("Date added"), systemImage: "chevron.down")
+                    }
+                    .buttonStyle(SoftPillStyle())
+                    Button { newestFirst.toggle() } label: {
+                        Image(systemName: newestFirst ? "arrow.down" : "arrow.up")
+                    }
+                    .buttonStyle(CircleIconStyle())
+                    .accessibilityLabel(newestFirst ? L("Newest first") : L("Oldest first"))
                 }
                 .pagePadding()
                 .focusSection()
@@ -1029,7 +1059,11 @@ struct FavouritesView: View {
             .padding(.bottom, pageMargin)
         }
         .edgeToEdge()
-        .task { await load() }
+        .task(id: newestFirst) { await load() }
+        .confirmationDialog(L("Date added"), isPresented: $choosingOrder, titleVisibility: .visible) {
+            Button(L("Newest first")) { newestFirst = true }
+            Button(L("Oldest first")) { newestFirst = false }
+        }
         .refreshOnReturn { await load() }
         .reloadOnWatchChange { await load() }
     }
@@ -1065,7 +1099,7 @@ struct FavouritesView: View {
             "Recursive": "true",
             "IncludeItemTypes": "Movie,Series,Episode",
             "SortBy": SortKey.added.fields,
-            "SortOrder": "Descending",
+            "SortOrder": newestFirst ? "Descending" : "Ascending",
         ])
         let (result, progress) = await (favorites, resume)
         guard !Task.isCancelled, loadID == id else { return }
@@ -1195,7 +1229,7 @@ struct SearchView: View {
                             chosenTerm = name
                             term = name
                         } label: {
-                            Label(name, systemImage: "magnifyingglass")
+                            Text(name)
                                 .lineLimit(1)
                                 .font(Theme.font(Theme.sm, .medium))
                                 .padding(.horizontal, Theme.px(9))
@@ -1205,8 +1239,9 @@ struct SearchView: View {
                     }
                 }
             }
-            .pagePadding()
-            .padding(.vertical, Theme.px(6))
+            .containerRelativeFrame(.horizontal, alignment: .center) { length, _ in length }
+            .padding(.horizontal, Theme.px(24))
+            .padding(.vertical, Theme.px(10))
         }
         .focusSection()
     }

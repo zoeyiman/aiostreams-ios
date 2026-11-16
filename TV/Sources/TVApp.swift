@@ -549,15 +549,7 @@ private struct AvatarStyle: ButtonStyle {
 
         var body: some View {
             label
-                .overlay(alignment: .top) {
-                    if focused {
-                        Circle()
-                            .stroke(Theme.ring, lineWidth: Theme.ringWidth)
-                            .frame(width: Theme.px(112) + 2 * Theme.ringOffset + Theme.ringWidth,
-                                   height: Theme.px(112) + 2 * Theme.ringOffset + Theme.ringWidth)
-                            .offset(y: -(Theme.ringOffset + Theme.ringWidth / 2))
-                    }
-                }
+                .brightness(focused ? 0.10 : 0)
                 .scaleEffect(focused ? 1.05 : 1)
                 .opacity(pressed ? 0.85 : 1)
                 .animation(.easeOut(duration: 0.15), value: focused)

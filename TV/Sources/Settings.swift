@@ -449,6 +449,20 @@ struct SettingsView: View {
 
     @State private var page: SettingsPage
     @FocusState private var tab: SettingsPage?
+    @FocusState private var focusedSetting: String?
+    @State private var opener: String?
+
+    private var showingOptions: Bool { chooser != nil || picker != nil }
+
+    private func dismissOptions() {
+        chooser = nil
+        picker = nil
+        let row = opener
+        Task { @MainActor in
+            await Task.yield()
+            focusedSetting = row
+        }
+    }
 
     /// You in the navigation opens Account; Settings opens Playback.
     init(start: SettingsPage = .playback) {
@@ -457,15 +471,7 @@ struct SettingsView: View {
     @Namespace private var settingsScope
 
     var body: some View {
-        Group {
-            if let chooser {
-                ChooserPanel(chooser: chooser) { self.chooser = nil }
-            } else if let picker {
-                MultiChooserPanel(chooser: picker) { self.picker = nil }
-            } else {
-                settingsPages
-            }
-        }
+        settingsPages
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task { await loadFeaturedOptions() }
         .task { if !DemoMode.active { newer = await UpdateCheck.newer() } }
@@ -482,30 +488,48 @@ struct SettingsView: View {
     }
 
     private var settingsPages: some View {
-        VStack(alignment: .leading, spacing: Theme.px(24)) {
-            PageTitle(text: L("Settings"))
-            HStack(alignment: .top, spacing: Theme.px(32)) {
+        HStack(alignment: .top, spacing: Theme.px(36)) {
+            VStack(alignment: .leading, spacing: Theme.px(18)) {
+                Text(L("Settings")).font(Theme.font(Theme.xl, .semibold))
+                    .padding(.leading, Theme.px(12))
                 tabs
-                    .frame(width: Theme.px(260))
-                // The page chosen at the side: its heading, then its cards, as the web app's settings.
+            }
+            .frame(width: Theme.px(232), alignment: .leading)
+            .disabled(showingOptions)
+            ZStack(alignment: .topLeading) {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: Theme.px(28)) {
+                    VStack(alignment: .leading, spacing: Theme.px(22)) {
                         header(page)
                         pageContent(page)
                     }
-                    .padding(.trailing, pageMargin)
-                    .padding(.bottom, Theme.px(64))
+                    .padding(.bottom, Theme.px(42))
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .contentMargins(.top, Theme.px(8), for: .scrollContent)
                 .id(page)
                 .focusSection()
+                .disabled(showingOptions)
+                .opacity(showingOptions ? 0 : 1)
+                .accessibilityHidden(showingOptions)
+                if let chooser {
+                    ChooserPanel(chooser: chooser, done: dismissOptions)
+                } else if let picker {
+                    MultiChooserPanel(chooser: picker, done: dismissOptions)
+                }
             }
-            .padding(.leading, pageInset)
         }
+        .padding(.horizontal, Theme.px(36))
+        .padding(.top, Theme.px(24))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background {
+            LinearGradient(colors: [Color(red: 0.17, green: 0.26, blue: 0.43), Color(red: 0.07, green: 0.10, blue: 0.18)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                .ignoresSafeArea()
+        }
         .focusScope(settingsScope)
-        .ignoresSafeArea()
+        .onExitCommand {
+            if showingOptions { dismissOptions() }
+            else { tab = page }
+        }
     }
 
     @ViewBuilder private func pageContent(_ page: SettingsPage) -> some View {
@@ -825,15 +849,12 @@ struct SettingsView: View {
         HStack(spacing: Theme.px(12)) {
             Image(systemName: page.icon)
                 .font(.system(size: Theme.px(24)))
-                .foregroundStyle(Theme.ring)
+                .foregroundStyle(Color.white)
                 .frame(width: Theme.px(28), height: Theme.px(28))
                 .padding(Theme.px(10))
                 .background(
                     RoundedRectangle(cornerRadius: Theme.px(10), style: .continuous)
-                        .fill(LinearGradient(colors: [Theme.brand500.opacity(0.1), Color.purple.opacity(0.1)],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .overlay(RoundedRectangle(cornerRadius: Theme.px(10), style: .continuous)
-                            .stroke(Theme.brand500.opacity(0.15), lineWidth: Theme.px(1)))
+                        .fill(Color.white.opacity(0.12))
                 )
             VStack(alignment: .leading, spacing: Theme.px(2)) {
                 Text(page.name).font(Theme.font(Theme.xl, .semibold))
@@ -871,17 +892,23 @@ struct SettingsView: View {
     }
 
     private func row(_ title: String, value: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            opener = title
+            action()
+        } label: {
             HStack(spacing: Theme.px(16)) {
                 Text(title).font(Theme.font(Theme.base, .medium))
                 Spacer(minLength: Theme.px(16))
-                Text(value).font(Theme.font(Theme.base)).foregroundStyle(Theme.gray400).lineLimit(1)
-                Image(systemName: "chevron.right").font(.system(size: Theme.px(12), weight: .semibold)).foregroundStyle(Theme.gray500)
+                Text(value).font(Theme.font(Theme.base)).opacity(0.8).lineLimit(1)
+                if value != L("On"), value != L("Off") {
+                    Image(systemName: "chevron.forward").font(.system(size: Theme.px(12), weight: .semibold)).opacity(0.65)
+                }
             }
             .padding(.horizontal, Theme.px(12))
             .frame(minHeight: Theme.px(52))
         }
-        .buttonStyle(RowStyle(radius: Theme.px(10)))
+        .buttonStyle(TVSettingsRowStyle())
+        .focused($focusedSetting, equals: title)
     }
 
     private func fact(_ label: String, _ value: String) -> some View {
@@ -1080,7 +1107,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .playback: return L("Playback")
         case .audio: return L("Audio")
         case .subtitles: return L("Subtitles")
-        case .interface: return L("Interface")
+        case .interface: return L("Appearance")
         case .theme: return L("Theme")
         case .account: return L("Account")
         case .about: return L("About")
@@ -1121,9 +1148,7 @@ extension ContainerValues {
 private struct SettingsCardShape: View {
     var body: some View {
         RoundedRectangle(cornerRadius: Theme.px(14), style: .continuous)
-            .fill(Color(red: 3 / 255, green: 7 / 255, blue: 18 / 255).opacity(0.7))
-            .overlay(RoundedRectangle(cornerRadius: Theme.px(14), style: .continuous)
-                .stroke(Color.white.opacity(0.1), lineWidth: Theme.px(1)))
+            .fill(Color.white.opacity(0.12))
     }
 }
 
@@ -1134,12 +1159,24 @@ private struct SettingsTabStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         Focused { focused in
             configuration.label
-                .foregroundStyle(selected || focused ? Color.white : Theme.gray300)
+                .foregroundStyle(focused ? Color.black : Color.white)
                 .background(
                     RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous)
-                        .fill(Color.white.opacity(focused ? 0.2 : selected ? 0.1 : 0))
+                        .fill(Color.white.opacity(focused ? 0.94 : selected ? 0.18 : 0))
                 )
                 .opacity(configuration.isPressed ? 0.8 : 1)
+        }
+    }
+}
+
+private struct TVSettingsRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Focused { focused in
+            configuration.label
+                .foregroundStyle(focused ? Color.black : Color.white)
+                .background(focused ? Color.white.opacity(0.94) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: Theme.px(8)))
+                .opacity(configuration.isPressed ? 0.82 : 1)
         }
     }
 }
@@ -1213,7 +1250,7 @@ struct MultiChooserPanel: View {
                             .frame(height: Theme.px(44))
                             .opacity(on || chosen.count < chooser.limit ? 1 : 0.5)
                         }
-                        .buttonStyle(RowStyle(radius: Theme.px(8)))
+                        .buttonStyle(TVSettingsRowStyle())
                         .focused($focused, equals: option.value)
                     }
                 }
@@ -1251,16 +1288,16 @@ private struct ChooserPanel: View {
                             done()
                         } label: {
                             HStack(spacing: Theme.px(10)) {
+                                Text(option.label).font(Theme.font(Theme.base))
+                                Spacer()
                                 Image(systemName: "checkmark")
                                     .font(.system(size: Theme.px(13), weight: .semibold))
                                     .opacity(option.value == chooser.current ? 1 : 0)
-                                Text(option.label).font(Theme.font(Theme.base))
-                                Spacer()
                             }
                             .padding(.horizontal, Theme.px(14))
                             .frame(height: Theme.px(44))
                         }
-                        .buttonStyle(RowStyle(radius: Theme.px(8)))
+                        .buttonStyle(TVSettingsRowStyle())
                         .focused($focused, equals: option.value)
                     }
                 }

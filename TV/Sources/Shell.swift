@@ -457,6 +457,9 @@ struct MainView: View {
     /// with "Prevent accidental exit" on only at a second press, as the Android TV app asks.
     private var exitAction: (() -> Void)? {
         guard paths[place]?.isEmpty ?? true else { return nil }
+        if place == .settings || place == .favourites {
+            return { railFocus = place }
+        }
         if place != .home { return { place = .home } }
         // Left to the system, Back leaves the app.
         guard prefs.preventAccidentalExit, !exitArmed else { return nil }
@@ -583,8 +586,8 @@ private struct TopTab: View {
         }
         .padding(.horizontal, item == .account || item == .settings || !named ? Theme.px(10) : Theme.px(12))
         .frame(height: Theme.px(36))
-        .foregroundStyle(current || focused ? Color.white : Theme.gray400)
-
+        .foregroundStyle(focused ? Color.black : current ? Color.white : Theme.gray400)
+        .background(focused ? Color.white.opacity(0.94) : current ? Color.white.opacity(0.10) : Color.clear, in: Capsule())
     }
 }
 
