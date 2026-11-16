@@ -304,6 +304,9 @@ final class Preferences: ObservableObject {
     @Published var showClock: Bool = UserDefaults.standard.object(forKey: "controls.clock") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showClock, forKey: "controls.clock") }
     }
+    @Published var showSyncControls: Bool = UserDefaults.standard.bool(forKey: "controls.showSync") {
+        didSet { UserDefaults.standard.set(showSyncControls, forKey: "controls.showSync") }
+    }
     /// Pausing and skipping bring the controls up.
     @Published var showOnPauseAndSkip: Bool = UserDefaults.standard.object(forKey: "controls.showOnPauseAndSkip") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showOnPauseAndSkip, forKey: "controls.showOnPauseAndSkip") }
@@ -550,6 +553,7 @@ struct SettingsView: View {
                 }
                 row(L("Show time left"), value: prefs.showTimeLeft ? L("On") : L("Off")) { prefs.showTimeLeft.toggle() }
                 row(L("Show the clock"), value: prefs.showClock ? L("On") : L("Off")) { prefs.showClock.toggle() }
+                row(L("Show Sync controls"), value: prefs.showSyncControls ? L("On") : L("Off")) { prefs.showSyncControls.toggle() }
                 row(L("Held speed"), value: L("%@×", rateName(prefs.holdRate))) {
                     chooser = Chooser(title: L("Held speed"), options: [1.5, 2, 3].map { (L("%@×", rateName($0)), String($0)) },
                                       current: String(prefs.holdRate)) { prefs.holdRate = Double($0) ?? 2 }

@@ -8,16 +8,21 @@ import TVServices
 private let heroPerLibrary = 8
 private let heroMax = 10
 
-/// What's partway through, then the next episodes, one card a show, most recently watched or aired first,
-/// as the web app merges them (lib/jellyfin/queries.ts `mergeRows`).
-func mergeRows(_ resume: [Item], _ nextUp: [Item]) -> [Item] {
+/// Keeps the first entry for each show or standalone title, in server order.
+private func uniqueWatchItems(_ items: [Item]) -> [Item] {
     var seen = Set<String>()
-    let kept = (resume + nextUp).filter { item in
+    return items.filter { item in
         let keys = [item.id, item.seriesId].compactMap { $0 }
         guard !keys.contains(where: seen.contains) else { return false }
         seen.formUnion(keys)
         return true
     }
+}
+
+/// What's partway through, then the next episodes, one card a show, most recently watched or aired first,
+/// as the web app merges them (lib/jellyfin/queries.ts `mergeRows`).
+func mergeRows(_ resume: [Item], _ nextUp: [Item]) -> [Item] {
+    let kept = uniqueWatchItems(resume + nextUp)
     // The later of when it was last watched and, for a next episode, when it aired (not still to come),
     // as the web app sorts it since Android v0.15.0; a next episode with no watch time stays last.
     let watched = { (item: Item) -> Date in
@@ -211,7 +216,8 @@ struct HomeView: View {
             guard !Task.isCancelled, profile == session.profileID else { return }
             if let resumeResult {
                 let titles = (resumeResult.items ?? []).filter { !$0.isChannel && $0.channelId == nil }
-                if resuming != titles { resuming = titles }
+                let unique = uniqueWatchItems(titles)
+                if resuming != unique { resuming = unique }
             }
             if catalogs.count != rows.count || !zip(catalogs, rows).allSatisfy({ old, new in
                 old.id == new.id && old.title == new.title && old.items == new.items

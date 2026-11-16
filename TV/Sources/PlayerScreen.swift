@@ -25,7 +25,11 @@ struct PlayerScreen: View {
         Group {
             if let model {
                 PlayerChrome(model: model, close: finish, playNext: { next in Task { await playOn(next) } }, finding: finding,
-                             leave: close, changeChannel: { step in Task { await changeChannel(step) } })
+                             leave: close, changeChannel: { step in Task { await changeChannel(step) } },
+                             chooseAnotherVersion: {
+                                 listVersions(model.request.item)
+                                 finish()
+                             })
                     // A new title starts the controls over.
                     .id(model.request.id)
                     .onReceive(model.$started.removeDuplicates()) { started in
@@ -195,6 +199,12 @@ private struct PlayerChrome: View {
     var leave: () -> Void = {}
     /// Up or down on a channel's video: the next or previous channel.
     var changeChannel: (Int) -> Void = { _ in }
+    let chooseAnotherVersion: () -> Void
+
+    private var canChooseAnotherVersion: Bool {
+        !model.isLive && !model.request.isTrailer && model.request.partyEntry == nil
+    }
+
     /// The stats over the video's corner.
     @State private var stats = false
     /// Select was held for faster playback, so its letting go isn't a press.
@@ -424,6 +434,7 @@ private struct PlayerChrome: View {
         .onExitCommand {
             if askingStill { close() }
             else if panel != nil { closePanel() }
+            else if model.failure != nil && canChooseAnotherVersion { chooseAnotherVersion() }
             else if upNextShown && (focus == .next || !shown) {
                 upNextDismissed = true
                 focus = shown ? .play : .surface
@@ -644,7 +655,7 @@ private struct PlayerChrome: View {
                 .buttonStyle(ControlIconStyle())
                 .accessibilityLabel(L("Subtitles"))
                 .focused($focus, equals: .tracks)
-            if !model.isLive {
+            if !model.isLive && prefs.showSyncControls {
                 Button { open(.sync) } label: { Image(systemName: "timer") }
                     .buttonStyle(ControlIconStyle())
                     .focused($focus, equals: .sync)
@@ -730,7 +741,9 @@ private struct PlayerChrome: View {
         VStack(spacing: Theme.px(12)) {
             Text(L("This version didn't play")).font(Theme.font(Theme.xl, .semibold))
             Text(failure).font(Theme.font(Theme.sm)).foregroundStyle(Theme.gray300).multilineTextAlignment(.center)
-            Text(L("Press Back to pick another version.")).font(Theme.font(Theme.xs)).foregroundStyle(Theme.gray400)
+            if canChooseAnotherVersion {
+                Text(L("Press Back to pick another version.")).font(Theme.font(Theme.xs)).foregroundStyle(Theme.gray400)
+            }
         }
         .padding(Theme.px(32))
         .frame(maxWidth: Theme.px(560))
@@ -962,7 +975,7 @@ private struct PlayerChrome: View {
         case .audio: focus = .audio
         case .chapters: focus = .chapters
         case .speed: focus = .speed
-        case .sync: focus = .sync
+        case .sync: focus = prefs.showSyncControls ? .sync : .play
         case .episodes: focus = .episodes
         case nil: break
         }
@@ -1120,10 +1133,24 @@ private struct PlayerPanelView: View {
                 Button(action: done) { Image(systemName: "xmark") }
                     .buttonStyle(ControlIconStyle())
                     .accessibilityLabel(L("Close"))
+                    .prefersDefaultFocus(panel == .sync, in: menuFocus)
             }
             .padding(.leading, Theme.px(8))
             if panel == .chapters {
                 chapters
+            } else if panel == .sync {
+                VStack(alignment: .leading, spacing: Theme.px(16)) {
+                    group(L("Subtitles")) {
+                        stepper(model.subtitleDelay, step: 0.1) { model.setSubtitleDelay($0) }
+                    }
+                    group(L("Audio")) {
+                        stepper(model.audioDelay, step: 0.05) { model.setAudioDelay($0) }
+                    }
+                    Text(L("Later shows subtitles, or plays the sound, after the picture; earlier, before it. Kept for this title."))
+                        .font(Theme.font(Theme.xs))
+                        .foregroundStyle(Theme.gray400)
+                        .padding(.horizontal, Theme.px(12))
+                }
             } else {
                 choices
             }
@@ -1183,16 +1210,7 @@ private struct PlayerPanelView: View {
                         }
                     }
                 case .sync:
-                    group(L("Subtitles")) {
-                        stepper(model.subtitleDelay, step: 0.1) { model.setSubtitleDelay($0) }
-                    }
-                    group(L("Audio")) {
-                        stepper(model.audioDelay, step: 0.05) { model.setAudioDelay($0) }
-                    }
-                    Text(L("Later shows subtitles, or plays the sound, after the picture; earlier, before it. Kept for this title."))
-                        .font(Theme.font(Theme.xs))
-                        .foregroundStyle(Theme.gray400)
-                        .padding(.horizontal, Theme.px(12))
+                    EmptyView()
                 case .episodes:
                     group(nil) {
                         if episodes.isEmpty { ProgressView().frame(maxWidth: .infinity) }
