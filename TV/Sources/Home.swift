@@ -72,8 +72,6 @@ struct HomeView: View {
     @State private var choice: VersionChoice?
     @State private var followed: Item?
 
-    @State private var scrollY: CGFloat = 0
-
     private var following: Bool { prefs.heroMode != "rotate" }
 
     var body: some View {
@@ -90,22 +88,7 @@ struct HomeView: View {
                 }
             } else {
                 ScrollView { rows }
-                    .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                        geometry.contentOffset.y + geometry.contentInsets.top
-                    } action: { _, offset in scrollY = offset }
                     .edgeToEdge()
-                    .mask(alignment: .top) {
-                        let bar = Theme.topBarInset
-                        let covered = min(bar, max(0, scrollY - HeroCarousel.height + bar))
-                        VStack(spacing: 0) {
-                            if !hero.isEmpty, bar > 0, covered > 0 {
-                                Color.clear.frame(height: covered)
-                                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                                    .frame(height: Theme.px(8))
-                            }
-                            Rectangle()
-                        }
-                    }
                     .padding(.top, hero.isEmpty ? Theme.topBarInset : 0)
             }
         }
