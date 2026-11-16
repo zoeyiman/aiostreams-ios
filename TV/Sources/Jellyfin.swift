@@ -379,6 +379,7 @@ struct PublicUser: Decodable, Identifiable, Hashable {
     var id: String
     var name: String?
     var hasPassword: Bool?
+    var enableAutoLogin: Bool?
     var primaryImageTag: String?
     var policy: Policy?
 }

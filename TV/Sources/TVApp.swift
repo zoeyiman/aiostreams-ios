@@ -240,14 +240,7 @@ struct SignInView: View {
         HStack(spacing: Theme.px(40)) {
             ForEach(users) { user in
                 Button {
-                    if session.asking && user.id == session.userId { session.carryOn(); return }
-                    name = user.name ?? ""
-                    password = ""
-                    if user.hasPassword == false && !requiresAccountIdentifier {
-                        signIn()
-                    } else {
-                        mode = .password(user)
-                    }
+                    selectProfile(user)
                 } label: {
                     UserAvatar(user: user, url: avatarURL(user))
                 }
@@ -256,6 +249,40 @@ struct SignInView: View {
             }
         }
         .padding(Theme.px(10))
+    }
+
+    private func selectProfile(_ user: PublicUser) {
+        if session.asking && user.id == session.userId {
+            session.carryOn()
+            return
+        }
+        if session.resumeProfile(userID: user.id) { return }
+
+        name = user.name ?? ""
+        password = ""
+        guard !requiresAccountIdentifier, user.enableAutoLogin ?? (user.hasPassword == false),
+              !name.isEmpty, var client = session.client else {
+            mode = .password(user)
+            return
+        }
+
+        // An unlocked profile may support an empty password on a picker address.
+        // Only the server can issue the selected user's token.
+        client.token = nil
+        working = true
+        error = nil
+        Task {
+            defer { working = false }
+            let result: AuthResult? = try? await client.post("/Users/AuthenticateByName", body: [
+                "Username": user.name ?? "", "Pw": "",
+            ])
+            guard session.client?.base == client.base, session.stage != .signedIn || session.asking else { return }
+            if let result, result.user.id == user.id {
+                session.signIn(result)
+            } else {
+                mode = .password(user)
+            }
+        }
     }
 
     private var requiresAccountIdentifier: Bool {

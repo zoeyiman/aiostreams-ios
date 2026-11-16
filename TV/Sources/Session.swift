@@ -153,6 +153,15 @@ final class Session: ObservableObject {
         asking = false
     }
 
+    /// Reuse only a token issued for this user on the connected server.
+    func resumeProfile(userID: String) -> Bool {
+        guard let address = client?.base,
+              let profile = profiles.first(where: { $0.address == address && $0.userID == userID }),
+              let token = Keychain.read(profile.tokenKey) else { return false }
+        activate(profile, token: token)
+        return true
+    }
+
     func switchProfile(_ profile: Profile) {
         if let token = Keychain.read(profile.tokenKey) {
             activate(profile, token: token)
