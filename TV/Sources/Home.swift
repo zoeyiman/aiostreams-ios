@@ -591,30 +591,30 @@ struct WideRow<Action: View>: View {
     var body: some View {
         let targets = items.map { MediaRowTarget.item($0.id) }
         return ScrollViewReader { scroller in
-            VStack(alignment: .leading, spacing: ShelfLayout.headerGap) {
+            VStack(alignment: .leading, spacing: Theme.px(12)) {
                 HStack {
                     Text(title).font(Theme.font(Theme.xl, .semibold))
                     Spacer()
                     action()
-                    MediaRowArrows(scroll: rowScroll, stride: ShelfLayout.wideWidth + ShelfLayout.gap, targets: targets) { target in
+                    MediaRowArrows(scroll: rowScroll, stride: WideCard.size.width + Theme.px(16), targets: targets) { target in
                         browsedTarget = target
-                        let width = ShelfLayout.wideWidth
-                        let leading = min(1, ShelfLayout.inset / max(1, rowScroll.viewportWidth - width))
+                        let width = WideCard.size.width
+                        let leading = min(1, pageInset / max(1, rowScroll.viewportWidth - width))
                         let anchor = UnitPoint(x: layoutDirection == .rightToLeft ? 1 - leading : leading, y: 0.5)
                         scroller.scrollTo(target, anchor: anchor)
                     }
                 }
-                .shelfPadding()
+                .pagePadding()
                 .focusSection()
                 ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: ShelfLayout.gap) {
+                    LazyHStack(alignment: .top, spacing: Theme.px(16)) {
                         ForEach(items) { item in
-                            WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching, width: ShelfLayout.wideWidth) { play(item) }
+                            WideCard(item: item, upcoming: upcoming, continueWatching: continueWatching) { play(item) }
                                 .id(MediaRowTarget.item(item.id))
                         }
                     }
-                    .shelfPadding()
-                    .padding(.vertical, Theme.px(5))
+                    .pagePadding()
+                    .padding(.vertical, Theme.px(8))
                 }
                 .edgeToEdge()
                 .onScrollGeometryChange(for: MediaRowScroll.self) {
@@ -638,7 +638,6 @@ struct WideCard: View {
     /// Not out yet: the air day over the still, and how long until it beside the name.
     var upcoming = false
     var continueWatching = false
-    var width: CGFloat = Theme.px(304)
     let action: () -> Void
 
     private var hasCardFocus: Bool {
@@ -651,14 +650,13 @@ struct WideCard: View {
     private var hidden: Bool { prefs.blurSpoilers && item.unstarted && !hasCardFocus }
 
     static let size = CGSize(width: Theme.px(304), height: Theme.px(171))
-    private var height: CGFloat { width * 9 / 16 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.px(8)) {
             Button(action: action) {
                 ZStack(alignment: .bottom) {
-                    RemoteImage(url: session.client?.still(item, height: Int(height * 2)))
-                        .frame(width: width, height: height)
+                    RemoteImage(url: session.client?.still(item, height: Int(Self.size.height * 2)))
+                        .frame(width: Self.size.width, height: Self.size.height)
                         .blur(radius: hidden ? Theme.px(12) : 0, opaque: true)
                         .animation(.easeOut(duration: 0.3), value: hidden)
                         .overlay(alignment: .topLeading) {
@@ -681,7 +679,7 @@ struct WideCard: View {
                         .frame(height: Theme.px(4))
                     }
                 }
-                .frame(width: width, height: height)
+                .frame(width: Self.size.width, height: Self.size.height)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.px(8), style: .continuous))
             }
             .buttonStyle(CardStyle())
@@ -706,7 +704,7 @@ struct WideCard: View {
                     .animation(.easeOut(duration: 0.3), value: hidden)
             }
             .padding(.horizontal, Theme.px(2))
-            .frame(width: width, alignment: .leading)
+            .frame(width: Self.size.width, alignment: .leading)
         }
     }
 }
