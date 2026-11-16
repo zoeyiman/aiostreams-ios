@@ -41,7 +41,7 @@ struct LiveTVView: View {
     @State private var now = Date()
     @State private var choice: VersionChoice?
     @State private var selectedID: String?
-    @FocusState private var focusedChannel: String?
+    @State private var previewRequest = UUID()
     @State private var fullScreenPlayer = false
     @State private var favourites: [String: Bool] = [:]
     @State private var pendingFavourite: String?
@@ -84,9 +84,6 @@ struct LiveTVView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .edgeToEdge()
         .playFlow($choice, playerVisibility: { fullScreenPlayer = $0 }) { resumeBrowser() }
-        .onChange(of: focusedChannel) { _, id in
-            if let id, channels.contains(where: { $0.id == id }) { selectedID = id }
-        }
         .task { await loadGroups() }
         .task(id: group) { await reload() }
         .task(id: window.start) { await refreshSchedules() }
@@ -105,20 +102,24 @@ struct LiveTVView: View {
                     LazyVStack(spacing: Theme.px(5)) {
                         ForEach(channels) { channel in
                             ChannelRow(channel: channel, slots: slots(channel), now: now, selected: channel.id == selected.id) {
-                                play(channel)
+                                selectedID = channel.id
+                                previewRequest = UUID()
                             }
-                            .focused($focusedChannel, equals: channel.id)
                             .accessibilityAddTraits(channel.id == selected.id ? .isSelected : [])
                             .onAppear { if channel.id == channels.last?.id { Task { await more() } } }
                         }
                     }
-                    .padding(.horizontal, Theme.px(5))
+                    .padding(Theme.px(6))
                 }
+                .scrollClipDisabled(false)
                 .frame(width: geometry.size.width * 0.43)
+                .clipped()
                 .focusSection()
                 ScrollView {
                     channelDetail(selected, previewWidth: min(geometry.size.width * 0.40, geometry.size.height * 0.96))
                 }
+                .scrollClipDisabled(false)
+                .clipped()
                 .focusSection()
             }
         }
@@ -134,8 +135,8 @@ struct LiveTVView: View {
         return VStack(alignment: .leading, spacing: Theme.px(9)) {
             ZStack {
                 ChannelLogo(channel: channel)
-                if !fullScreenPlayer {
-                    ChannelPreview(channel: channel).id(channel.id)
+                if selectedID == channel.id && !fullScreenPlayer {
+                    ChannelPreview(channel: channel).id(previewRequest)
                 }
             }
             .frame(width: previewWidth, height: previewWidth * 9 / 16)
@@ -173,7 +174,7 @@ struct LiveTVView: View {
                         if let start = programme.starts {
                             Text(prefs.time(start)).foregroundStyle(Theme.gray400)
                         }
-                        Text(programme.name ?? "").lineLimit(1)
+                        Text(programme.name ?? "").lineLimit(2)
                     }
                     .font(Theme.font(Theme.sm))
                 }
@@ -454,12 +455,12 @@ private struct ChannelRow: View {
                 ChannelLogo(channel: channel)
                     .frame(width: Theme.px(66), height: Theme.px(42))
                 VStack(alignment: .leading, spacing: Theme.px(3)) {
-                    Text(channel.name ?? "").font(Theme.font(Theme.sm, .semibold)).lineLimit(1)
-                    Text(slots.now?.name ?? L("Live")).font(Theme.font(Theme.xs)).foregroundStyle(Theme.gray200).lineLimit(1)
+                    Text(channel.name ?? "").font(Theme.font(Theme.sm, .semibold)).lineLimit(2)
+                    Text(slots.now?.name ?? L("Live")).font(Theme.font(Theme.xs)).foregroundStyle(Theme.gray200).lineLimit(2)
                     if let current = slots.now { ChannelProgress(slot: current, now: now) }
                     if let next = slots.next {
                         Text(next.start.map { "\(prefs.time($0)) \(next.name)" } ?? next.name)
-                            .font(Theme.font(Theme.xs)).foregroundStyle(Theme.gray400).lineLimit(1)
+                            .font(Theme.font(Theme.xs)).foregroundStyle(Theme.gray400).lineLimit(2)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -494,6 +495,7 @@ private struct ChannelPreview: View {
     let channel: Item
     @State private var engine: AetherEngine?
     @State private var ready = false
+    @State private var failed = false
 
     var body: some View {
         Color.clear
@@ -502,6 +504,16 @@ private struct ChannelPreview: View {
                     ChannelPreviewSurface(engine: engine)
                         .opacity(ready ? 1 : 0)
                         .onReceive(engine.$hasFirstFrameReadyForDisplay) { ready = $0 }
+                        .onReceive(engine.$state) { state in
+                            if case .error = state { failed = true }
+                        }
+                }
+                if failed {
+                    Text(L("Preview unavailable")).font(Theme.font(Theme.sm, .semibold))
+                        .padding(Theme.px(8))
+                        .background(.black.opacity(0.8), in: Capsule())
+                } else if !ready {
+                    ProgressView()
                 }
             }
             .accessibilityHidden(true)
@@ -514,14 +526,28 @@ private struct ChannelPreview: View {
     }
 
     private func preview() async {
-        try? await Task.sleep(for: .milliseconds(450))
-        guard !Task.isCancelled, let client = session.client, let userID = session.userId,
-              let info = try? await client.playbackInfo(userId: userID, itemId: channel.id),
-              let first = info.mediaSources?.first else { return }
-        let named = try? await client.playbackInfo(userId: userID, itemId: channel.id, sourceId: first.ownId)
-        let source = named?.mediaSources?.first(where: { $0.ownId == first.ownId }) ?? first
-        guard !Task.isCancelled, let url = client.streamURL(itemId: channel.id, source: source),
-              let preview = try? AetherEngine() else { return }
+        guard !Task.isCancelled, let client = session.client, let userID = session.userId else { return }
+        guard let info = try? await client.playbackInfo(userId: userID, itemId: channel.id),
+              let first = info.mediaSources?.first else {
+            if !Task.isCancelled { failed = true }
+            return
+        }
+        guard !Task.isCancelled else { return }
+
+        let source: MediaSource
+        if let path = first.path, let scheme = URL(string: path)?.scheme?.lowercased(),
+           scheme == "https" || scheme == "http" {
+            source = first
+        } else {
+            let named = try? await client.playbackInfo(userId: userID, itemId: channel.id, sourceId: first.ownId)
+            source = named?.mediaSources?.first(where: { $0.ownId == first.ownId }) ?? first
+        }
+        guard !Task.isCancelled else { return }
+        guard let url = client.streamURL(itemId: channel.id, source: source),
+              let preview = try? AetherEngine() else {
+            failed = true
+            return
+        }
         preview.volume = 0
         engine = preview
         var options = LoadOptions()
@@ -538,6 +564,7 @@ private struct ChannelPreview: View {
             if !Task.isCancelled {
                 engine = nil
                 ready = false
+                failed = true
             }
         }
     }
